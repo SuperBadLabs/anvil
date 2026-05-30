@@ -120,6 +120,10 @@
         " · "
         (or (spark/job-sparkline job-name {:n 50 :width-px 300 :height-px 36})
             "no history yet")]
+       [:p
+        [:a.btn-trigger {:href (str "/jobs/" job-name "/build-form")
+                         :style "text-decoration:none;"}
+         "▶ Build with parameters"]]
        [:h3 "Jenkinsfile"]
        [:pre.console (or (:jenkinsfile-source job) "")]
        [:h3 "Build history"]

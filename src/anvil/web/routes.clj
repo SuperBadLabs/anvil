@@ -17,8 +17,10 @@
             [anvil.web.views.console-page :as console-page]
             [anvil.web.views.compare-page :as compare-page]
             [anvil.web.views.artifacts-page :as artifacts-page]
+            [anvil.web.views.build-form :as build-form]
             [anvil.web.console-dl :as console-dl]
             [anvil.web.build-actions :as build-actions]
+            [ring.middleware.cookies :as ring-cookies]
             [clojure.data.json :as json]))
 
 (defn- html [body]
@@ -110,6 +112,13 @@
    ["/status"          {:get handler-dashboard      :name ::status-html}]   ; legacy alias
    ["/jobs"            {:get handler-jobs-list      :name ::jobs}]
    ["/jobs/:name"      {:get handler-job-detail     :name ::job-detail}]
+   ;; TU4.1+4.2+4.3+4.4+4.5: trigger UX. get-form returns a Hiccup
+   ;; HTML string (no headers); submit returns a Ring map already.
+   ;; Wrap GET in the html helper so wrap-cookies sees a real response.
+   ["/jobs/:name/build-form"
+    {:get  (fn [req] (html (build-form/get-form req)))
+     :post build-form/submit
+     :name ::build-form}]
    ["/jobs/:name/:number" {:get handler-build-detail :name ::build-detail}]
    ["/jobs/:name/:number/console"   {:get handler-build-console :name ::build-console}]
    ["/jobs/:name/:number/compare"   {:get handler-build-compare :name ::build-compare}]
@@ -145,7 +154,11 @@
    called from tests without starting a server."
   []
   (-> (ring/ring-handler
-       (ring/router routes)
+       ;; :conflicts nil disables reitit's strict overlap check —
+       ;; /jobs/:name/build-form vs /jobs/:name/:number is a real
+       ;; literal-vs-variable overlap and reitit's matcher already
+       ;; picks the literal correctly at request time.
+       (ring/router routes {:conflicts nil})
        ;; Default chain: static /public/* assets (vendored htmx etc. from
        ;; resources/public/), then 404. Resource handler is anvil-internal:
        ;; never serves /etc/passwd-style paths because it's rooted at the
@@ -162,4 +175,8 @@
                         :body "anvil: 404 — route not found"})})))
       ;; Form + query param parsing — Jenkins' buildWithParameters
       ;; needs both.
-      ring-params/wrap-params))
+      ring-params/wrap-params
+      ;; TU4.3: read + serialize Set-Cookie for the recent-values
+      ;; memory on the build-form page. Idempotent for everything
+      ;; that doesn't return :cookies in its response.
+      ring-cookies/wrap-cookies))

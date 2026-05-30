@@ -199,6 +199,41 @@
   .console-toolbar a:hover { text-decoration: underline; }
   .console-toolbar .elapsed { color: var(--fg); font-family: var(--font-mono); }
 
+  /* Build form (TU4.1) */
+  .form-row { margin: var(--space-3) 0; }
+  .form-row label { display: block; color: var(--fg); margin-bottom: var(--space-1); }
+  .form-row .field-name { font-weight: 600; color: var(--fg-strong); }
+  .form-row .field-kind { color: var(--fg-faint); font-size: 0.85em; }
+  .form-row .field-desc { color: var(--fg-muted); font-size: 0.9em; }
+  .form-row input[type=text],
+  .form-row input[type=password],
+  .form-row input[type=number],
+  .form-row select,
+  .form-row textarea { width: 100%; max-width: 480px; padding: var(--space-2) var(--space-3);
+                       border: 1px solid var(--border); border-radius: var(--radius-1);
+                       font-family: var(--font-sans); font-size: 1em;
+                       background: var(--bg); color: var(--fg); }
+  .form-row input:focus, .form-row select:focus { outline: 2px solid var(--accent); }
+  .form-row .field-error { color: var(--err); font-size: 0.85em; margin-top: var(--space-1); min-height: 1.2em; }
+  .form-row .field-error.error { background: var(--err-bg); padding: var(--space-1) var(--space-2);
+                                  border-radius: var(--radius-1); }
+  .form-row.trigger-extras { background: var(--bg-elevated); padding: var(--space-2) var(--space-3);
+                              border-radius: var(--radius-1); }
+  .btn-trigger { background: var(--ok); color: white; border: none;
+                 border-radius: var(--radius-1); padding: var(--space-2) var(--space-4);
+                 font-size: 1em; font-weight: 600; cursor: pointer; }
+  .btn-trigger:hover { opacity: 0.9; }
+  .btn-secondary { background: var(--bg-elevated); color: var(--fg); border: 1px solid var(--border);
+                    border-radius: var(--radius-1); padding: var(--space-2) var(--space-3);
+                    font-size: 0.9em; cursor: pointer; }
+  .btn-secondary:hover { background: var(--bg-hover); }
+  .shortlink { margin: var(--space-3) 0; background: var(--bg-elevated);
+               padding: var(--space-3); border-radius: var(--radius-1); }
+  .shortlink textarea { width: 100%; max-width: 100%; font-family: var(--font-mono);
+                        font-size: 0.85em; border: 1px solid var(--border);
+                        background: var(--bg); color: var(--fg);
+                        padding: var(--space-2); border-radius: var(--radius-1); }
+
   /* Retry button (TU3.3) */
   .btn-retry { background: var(--accent); color: white; border: none;
                border-radius: var(--radius-1); padding: var(--space-2) var(--space-3);
