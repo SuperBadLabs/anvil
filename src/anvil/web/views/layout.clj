@@ -136,6 +136,76 @@
                 line-height: 1.4em; max-height: 60vh; overflow: auto;
                 white-space: pre-wrap; word-wrap: break-word; }
 
+  /* ── ANSI palette (TU2.3 / TU2.4) ─────────────────────────────────── */
+  /* Foreground basic */
+  .ansi-fg-black   { color: #0d1117; }
+  .ansi-fg-red     { color: #f85149; }
+  .ansi-fg-green   { color: #3fb950; }
+  .ansi-fg-yellow  { color: #d29922; }
+  .ansi-fg-blue    { color: #58a6ff; }
+  .ansi-fg-magenta { color: #bc8cff; }
+  .ansi-fg-cyan    { color: #39c5cf; }
+  .ansi-fg-white   { color: #c9d1d9; }
+  /* Foreground bright */
+  .ansi-fg-brblack   { color: #6e7681; }
+  .ansi-fg-brred     { color: #ffa198; }
+  .ansi-fg-brgreen   { color: #56d364; }
+  .ansi-fg-bryellow  { color: #e3b341; }
+  .ansi-fg-brblue    { color: #79c0ff; }
+  .ansi-fg-brmagenta { color: #d2a8ff; }
+  .ansi-fg-brcyan    { color: #56d4dd; }
+  .ansi-fg-brwhite   { color: #f0f6fc; }
+  /* Background basic + bright */
+  .ansi-bg-black, .ansi-bg-brblack     { background: #0d1117; }
+  .ansi-bg-red, .ansi-bg-brred         { background: #4c1f22; }
+  .ansi-bg-green, .ansi-bg-brgreen     { background: #1f3a1e; }
+  .ansi-bg-yellow, .ansi-bg-bryellow   { background: #422d09; }
+  .ansi-bg-blue, .ansi-bg-brblue       { background: #1f3b66; }
+  .ansi-bg-magenta, .ansi-bg-brmagenta { background: #3c1f51; }
+  .ansi-bg-cyan, .ansi-bg-brcyan       { background: #0d3b3c; }
+  .ansi-bg-white, .ansi-bg-brwhite     { background: #c9d1d9; color: #0d1117; }
+  /* Styles */
+  .ansi-bold      { font-weight: 700; }
+  .ansi-dim       { opacity: 0.6; }
+  .ansi-italic    { font-style: italic; }
+  .ansi-underline { text-decoration: underline; }
+  .ansi-strike    { text-decoration: line-through; }
+
+  /* ── Console layout (TU2) ─────────────────────────────────────────── */
+  .console-frame { position: relative; }
+  .console-frame pre.console { max-height: 70vh; }
+  details.stage-fold { background: var(--bg-elevated); border-radius: var(--radius-1);
+                       margin: var(--space-2) 0; }
+  details.stage-fold > summary { padding: var(--space-2) var(--space-3); cursor: pointer;
+                                 font-family: var(--font-sans); font-weight: 500;
+                                 color: var(--fg); user-select: none; }
+  details.stage-fold > summary .stage-meta { color: var(--fg-faint); font-size: 0.85em; margin-left: var(--space-3); }
+  details.stage-fold > pre.console { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; max-height: 50vh; }
+
+  /* Jump-to-bottom button (TU2.5) */
+  .jump-to-bottom { position: absolute; bottom: var(--space-3); right: var(--space-3);
+                    background: var(--accent); color: white;
+                    border: none; border-radius: var(--radius-1);
+                    padding: var(--space-2) var(--space-3); font-size: 0.85em;
+                    cursor: pointer; opacity: 0; pointer-events: none;
+                    transition: opacity 200ms;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+  .jump-to-bottom.shown { opacity: 1; pointer-events: auto; }
+
+  /* Console toolbar (download links + elapsed timer) */
+  .console-toolbar { display: flex; gap: var(--space-3); align-items: center;
+                     margin: var(--space-2) 0; font-size: 0.85em; color: var(--fg-muted); }
+  .console-toolbar a { color: var(--accent); text-decoration: none; }
+  .console-toolbar a:hover { text-decoration: underline; }
+  .console-toolbar .elapsed { color: var(--fg); font-family: var(--font-mono); }
+
+  /* Per-step duration SVG (TU2.8) */
+  .duration-chart { width: 100%; height: auto; margin: var(--space-3) 0; }
+  .duration-chart .bar { fill: var(--accent); }
+  .duration-chart .bar:hover { fill: var(--info); }
+  .duration-chart .label { fill: var(--fg-muted); font-size: 11px; font-family: var(--font-sans); }
+  .duration-chart .axis  { stroke: var(--border); stroke-width: 1; }
+
   /* ── Footer ───────────────────────────────────────────────────────── */
   footer { margin-top: 3em; color: var(--fg-ghost); font-size: 0.85em;
            border-top: 1px solid var(--border); padding-top: var(--space-4); }

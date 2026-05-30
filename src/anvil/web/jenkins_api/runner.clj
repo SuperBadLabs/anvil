@@ -18,7 +18,8 @@
             [anvil.compat.jenkins.dispatcher :as ad]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.env :as jenkins-env]
-            [anvil.web.jenkins-api.jobs :as jobs]))
+            [anvil.web.jenkins-api.jobs :as jobs]
+            [anvil.web.log-tail :as log-tail]))
 
 (defn- flatten-pipeline
   "Squash a Jenkins pipeline IR's stages + post hooks into the linear
@@ -85,49 +86,58 @@
                      :job-name job-name
                      :workspace workspace-path
                      :extra-env (or parameters {})})]
-      (try
-        (let [source (:jenkinsfile-source job)
-              base-ir (t/parse source (str job-name "/Jenkinsfile"))
-              ;; TX11B: expand matrix combinations (scripted-Pipeline files
-              ;; with .combinations { … } blocks need their templated
-              ;; stages materialized before dispatch).
-              pipeline-ir (mx/expand-matrices base-ir source)
-              flat-stages (flatten-pipeline pipeline-ir)
-              flat {:stages (vec flat-stages)}
-              dispatcher (ad/make {:execute? execute?})
-              stash-root (.getAbsolutePath
-                          (io/file (.getParentFile workspace) "stashes"))
-              ctx {:dispatcher dispatcher
-                   :env env-vars
-                   :cwd workspace-path
-                   :workspace workspace-path
-                   :stash-root stash-root   ;; TX11C
-                   :log-file log-file
-                   :build-number number
-                   :job-name job-name}
-              result (d/run-pipeline flat dispatcher ctx)
-              effects @(:effects dispatcher)
-              build-result (case (:status result)
-                             :ok :success
-                             :failed :failure
-                             :success)]
-          (jobs/record-build-end! job-name number
-                                  {:result build-result
-                                   :effects effects
-                                   :log-path log-path})
-          {:build-number number
-           :result build-result
-           :effect-count (count effects)
-           :workspace workspace-path
-           :log-path log-path})
+      ;; TU2.1: spawn the log-tail thread BEFORE the dispatcher kicks
+      ;; off so the first subprocess line is observed live. The thread
+      ;; tails `log-file` and publishes per-line :console-line events
+      ;; on the [:build job-name number] bus topic. Stopped in the
+      ;; finally so a thrown build still cleans up.
+      (let [stop-tail (log-tail/start! job-name number log-file)]
+        (try
+          (let [source (:jenkinsfile-source job)
+                base-ir (t/parse source (str job-name "/Jenkinsfile"))
+                ;; TX11B: expand matrix combinations (scripted-Pipeline files
+                ;; with .combinations { … } blocks need their templated
+                ;; stages materialized before dispatch).
+                pipeline-ir (mx/expand-matrices base-ir source)
+                flat-stages (flatten-pipeline pipeline-ir)
+                flat {:stages (vec flat-stages)}
+                dispatcher (ad/make {:execute? execute?})
+                stash-root (.getAbsolutePath
+                            (io/file (.getParentFile workspace) "stashes"))
+                ctx {:dispatcher dispatcher
+                     :env env-vars
+                     :cwd workspace-path
+                     :workspace workspace-path
+                     :stash-root stash-root   ;; TX11C
+                     :log-file log-file
+                     :build-number number
+                     :job-name job-name}
+                result (d/run-pipeline flat dispatcher ctx)
+                effects @(:effects dispatcher)
+                build-result (case (:status result)
+                               :ok :success
+                               :failed :failure
+                               :success)]
+            (jobs/record-build-end! job-name number
+                                    {:result build-result
+                                     :effects effects
+                                     :log-path log-path})
+            {:build-number number
+             :result build-result
+             :effect-count (count effects)
+             :workspace workspace-path
+             :log-path log-path})
 
-        (catch Exception e
-          (jobs/record-build-end! job-name number
-                                  {:result :failure
-                                   :effects [[:exception (.getMessage e)]]
-                                   :log-path log-path})
-          {:build-number number
-           :result :failure
-           :error (.getMessage e)
-           :workspace workspace-path
-           :log-path log-path})))))
+          (catch Exception e
+            (jobs/record-build-end! job-name number
+                                    {:result :failure
+                                     :effects [[:exception (.getMessage e)]]
+                                     :log-path log-path})
+            {:build-number number
+             :result :failure
+             :error (.getMessage e)
+             :workspace workspace-path
+             :log-path log-path})
+
+          (finally
+            (stop-tail)))))))

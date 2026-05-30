@@ -14,6 +14,8 @@
             [anvil.web.anvil-admin :as anvil-admin]
             [anvil.web.events-sse :as events-sse]
             [anvil.web.widgets :as widgets]
+            [anvil.web.views.console-page :as console-page]
+            [anvil.web.console-dl :as console-dl]
             [clojure.data.json :as json]))
 
 (defn- html [body]
@@ -39,6 +41,13 @@
 
 (defn- handler-build-detail [req]
   (html (build-page/build-detail req)))
+
+(defn- handler-build-console [req]
+  ;; ?download=raw|text routes to the file-download endpoint; bare
+  ;; URL renders the HTML console view.
+  (if (get-in req [:query-params "download"])
+    (console-dl/handler req)
+    (html (console-page/page req))))
 
 (defn- handler-queue-page [req]
   (html (queue-page/page req)))
@@ -93,6 +102,7 @@
    ["/jobs"            {:get handler-jobs-list      :name ::jobs}]
    ["/jobs/:name"      {:get handler-job-detail     :name ::job-detail}]
    ["/jobs/:name/:number" {:get handler-build-detail :name ::build-detail}]
+   ["/jobs/:name/:number/console" {:get handler-build-console :name ::build-console}]
    ["/queue"           {:get handler-queue-page     :name ::queue}]
    ["/coverage"        {:get handler-coverage-page  :name ::coverage}]
    ;; anvil-internal JSON

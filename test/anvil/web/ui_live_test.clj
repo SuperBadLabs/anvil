@@ -133,6 +133,38 @@
                   3000)]
     (is updated? "dashboard 'Jobs' value should refresh from 1 → 2 after publish")))
 
+(deftest ^:browser console-page-live-tails-published-lines
+  ;; TU2 marquee scenario: open a build's /console page, publish
+  ;; :console-line events from the bus, watch them appear in the
+  ;; live-tail <pre> via the page's EventSource subscription.
+  (bus/unsubscribe-all!)
+  (register-test-job! "console-live")
+  ;; Force the build into a 'building' state — record-build-start!
+  ;; gives us number 1 and tags it building?
+  (let [n (anvil.web.jenkins-api.jobs/record-build-start! "console-live" {})]
+    (e/go *driver* (str *base-url* "/jobs/console-live/" n "/console"))
+    (is (wait-until #(e/exists? *driver* {:css "pre.console.live-tail"}) 5000)
+        "live-tail <pre> renders for running build")
+    (Thread/sleep 600)
+    ;; Publish three lines as if the dispatcher's log-tail thread emitted.
+    (doseq [[i text] [[1 "first line"] [2 "second line"] [3 "third!"]]]
+      (bus/publish! [:build "console-live" n]
+                    {:type :console-line
+                     :seq i
+                     :stream :stdout
+                     :line text}))
+    (let [arrived? (wait-until
+                    (fn []
+                      (let [text (e/js-execute *driver*
+                                               "var p=document.querySelector('pre.console.live-tail');
+                                                return p ? p.textContent : '';")]
+                        (and (clojure.string/includes? text "first line")
+                             (clojure.string/includes? text "second line")
+                             (clojure.string/includes? text "third!"))))
+                    3000)]
+      (is arrived?
+          "all three published lines must appear in the live-tail <pre> via SSE"))))
+
 (deftest ^:browser eventsource-survives-server-bounce
   ;; This is the auto-reconnect promise of EventSource: if the server
   ;; closes the connection, the browser opens a new one within a few
