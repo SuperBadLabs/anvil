@@ -1,0 +1,55 @@
+;; anvil agents.edn — labeled-agent registry.
+;;
+;; Each entry maps a Jenkins agent label to an executor config. When a
+;; scripted Pipeline calls `node('maven-21') { ... }`, anvil's dispatcher
+;; looks the label up here, applies the executor's env + cwd defaults,
+;; then runs the body. Unmatched labels degrade to :local with a [warn].
+;;
+;; Executor kinds (v1):
+;;   :local      — run subprocess directly on the anvil host
+;;   :docker     — run inside a docker container (image required)
+;;
+;; For multi-host fleets the executor kind would be :ssh / :k8s — both
+;; reserved for v1.x and not implemented here yet.
+;;
+;; Operator override: drop your own agents.edn under
+;;   $ANVIL_CONFIG_DIR/agents.edn,  or
+;;   ./config/agents.edn (working dir of the daemon)
+
+{:default {:executor :local
+           :env      {}
+           :cwd      "/tmp/anvil-workspace"}
+
+ :labels
+ {;; Generic labels often used in scripted Pipelines
+  "linux"          {:executor :local
+                    :env      {}}
+
+  "any"            {:executor :local
+                    :env      {}}
+
+  ;; JDK-versioned Maven build labels (matches ci.jenkins.io's convention)
+  "maven-21"       {:executor :local
+                    :env      {"PATH" "/home/srikanth/.local/opt/apache-maven-3.9.9/bin:/usr/local/bin:/usr/bin:/bin"
+                               "JAVA_HOME" "/usr/lib/jvm/temurin-25-jdk"}}
+
+  "maven-25"       {:executor :local
+                    :env      {"PATH" "/home/srikanth/.local/opt/apache-maven-3.9.9/bin:/usr/local/bin:/usr/bin:/bin"
+                               "JAVA_HOME" "/usr/lib/jvm/temurin-25-jdk"}}
+
+  ;; Windows labels — explicitly unsupported on single-host Linux. The
+  ;; matrix expander's axis-skip can drop these at expansion time;
+  ;; otherwise we degrade to :local with a warning.
+  "maven-21-windows" {:executor :local
+                      :env      {}
+                      :degraded? true
+                      :degrade-reason "Windows agents not supported on this host"}
+
+  "maven-25-windows" {:executor :local
+                      :env      {}
+                      :degraded? true
+                      :degrade-reason "Windows agents not supported on this host"}
+
+  ;; Docker-style labels seen in the Jenkins Jenkinsfile athAxes block
+  "docker-highmem" {:executor :local
+                    :env      {}}}}
