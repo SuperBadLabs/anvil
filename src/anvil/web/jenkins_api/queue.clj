@@ -19,7 +19,8 @@
      Jenkins's `disableConcurrentBuilds()` posture). Workers check
      the running-per-job counter before dispatching; if at the cap,
      they re-enqueue the item at the tail and pick the next one."
-  (:require [taoensso.timbre :as log]
+  (:require [anvil.events.bus :as bus]
+            [taoensso.timbre :as log]
             [anvil.web.jenkins-api.jobs :as jobs])
   (:import [java.util.concurrent
             ExecutorService Executors LinkedBlockingDeque TimeUnit
@@ -110,6 +111,13 @@
                  (assoc-in [:items-by-id qid] item)
                  (update :deque (fn [^LinkedBlockingDeque d]
                                   (.addLast d qid) d)))))
+    ;; TU1.2: announce queue admission. Lets the dashboard's "Queue"
+    ;; stat card and the /queue page tick up live.
+    (bus/publish! :queue
+                  {:type :queue-enqueued
+                   :queue-id qid
+                   :job-name job-name
+                   :ts (Instant/now)})
     item))
 
 (defn cancel!
@@ -177,6 +185,13 @@
 
           (try-claim-slot! (:job-name item))
           (do (swap! state assoc-in [:items-by-id first-qid :phase] :dispatched)
+              ;; TU1.2: queue size went down by one + a build is about
+              ;; to start. Dashboard "Queue" counter re-fetches.
+              (bus/publish! :queue
+                            {:type :queue-dispatched
+                             :queue-id first-qid
+                             :job-name (:job-name item)
+                             :ts (Instant/now)})
               item)
 
           :else

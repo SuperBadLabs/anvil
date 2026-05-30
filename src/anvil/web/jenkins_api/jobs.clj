@@ -38,6 +38,7 @@
    Concurrency: a single atom holds everything. swap! handles CAS on
    build creation; reads are lock-free."
   (:require [clojure.string :as str]
+            [anvil.events.bus :as bus]
             [anvil.storage.db :as db]
             [anvil.storage.jobs :as persist])
   (:import [java.time Instant]))
@@ -200,6 +201,17 @@
        {:job-name job-name :number n :parameters parameters})
       (persist/update-job-summary!
        job-name {:color (name (result->color :running true)) :last-build n}))
+    ;; TU1.2: announce on the event bus. Synchronous + non-throwing
+    ;; (bus's publish! catches subscriber failures). Pure additive —
+    ;; if nobody's subscribed (e.g. CLI usage), this is one atom deref
+    ;; + a no-op doseq.
+    (bus/publish! [:job job-name]
+                  {:type :build-started
+                   :job-name job-name
+                   :build-number n
+                   :url url
+                   :ts (Instant/now)
+                   :parameters (or parameters {})})
     n))
 
 (defn- effects->console-log
@@ -292,7 +304,16 @@
         :duration-ms @dur-atom :log-path log-path})
       (persist/update-job-summary!
        job-name {:color (name (result->color result false))
-                 (if (= :success result) :last-successful-build :last-failed-build) build-number})))
+                 (if (= :success result) :last-successful-build :last-failed-build) build-number}))
+    ;; TU1.2: announce build completion. Same posture as build-started.
+    (bus/publish! [:job job-name]
+                  {:type :build-done
+                   :job-name job-name
+                   :build-number build-number
+                   :result result
+                   :duration-ms @dur-atom
+                   :color (result->color result false)
+                   :ts (Instant/now)}))
   nil)
 
 (defn console-log-for

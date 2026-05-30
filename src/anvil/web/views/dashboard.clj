@@ -17,9 +17,58 @@
           {:success 0 :failure 0 :unstable 0 :aborted 0 :running 0}
           (jobs/list-jobs)))
 
-(defn page [_req]
+;; TU1.4 + TU1.6 — htmx-sse live convention.
+;;
+;; Pattern: a "live widget" is a Hiccup fragment with:
+;;   :hx-ext       "sse"                                  ; enables the SSE extension
+;;   :sse-connect  "/anvil/events?topics=…"               ; subscribes to bus topics
+;;   :sse-swap     "build-started build-done …"           ; OR
+;;   :hx-trigger   "sse:build-started, sse:build-done"    ; trigger an hx-get
+;;   :hx-get       "/anvil/widgets/<name>"                ; widget refresh endpoint
+;;   :hx-swap      "outerHTML"                            ; the response replaces us
+;;
+;; The widget endpoint returns the SAME fragment (with hx attrs intact)
+;; so the live wiring survives the swap. Server is fast enough that the
+;; full re-render is cheaper than diffing.
+
+(defn stats-fragment
+  "Render the dashboard's stats row as a self-contained live fragment.
+   Called from both the full page (page) and the SSE-refresh widget
+   endpoint (anvil.web.widgets/dashboard-stats). Whichever bus event
+   in :hx-trigger fires, htmx re-fetches this fragment and swaps it
+   in place."
+  []
   (let [all-jobs (jobs/list-jobs)
         outcomes (count-builds-by-outcome)
+        queued (queue/queue-snapshot)
+        running (queue/running-snapshot)]
+    [:div.stat-row
+     {:id "dashboard-stats"
+      :hx-ext "sse"
+      :sse-connect "/anvil/events?topics=global"
+      :hx-get "/anvil/widgets/dashboard-stats"
+      :hx-trigger "sse:build-started, sse:build-done, sse:queue-enqueued, sse:queue-dispatched"
+      :hx-swap "outerHTML"}
+     [:div.stat
+      [:div.stat-label "Jobs"]
+      [:div.stat-value (count all-jobs)]]
+     [:div.stat
+      [:div.stat-label "Queue"]
+      [:div.stat-value {:class (if (seq queued) "yellow" "muted")}
+       (count queued)]]
+     [:div.stat
+      [:div.stat-label "Running"]
+      [:div.stat-value {:class (if (seq running) "yellow" "muted")}
+       (reduce + 0 (vals running))]]
+     [:div.stat
+      [:div.stat-label "Passing"]
+      [:div.stat-value.green (:success outcomes)]]
+     [:div.stat
+      [:div.stat-label "Failing"]
+      [:div.stat-value.red (:failure outcomes)]]]))
+
+(defn page [_req]
+  (let [all-jobs (jobs/list-jobs)
         queued (queue/queue-snapshot)
         running (queue/running-snapshot)
         ;; Show every job; sort jobs that have built recently first.
@@ -30,24 +79,7 @@
                          (take 10))]
     (layout/page
      {:title "Dashboard" :active :dashboard}
-     [:div.stat-row
-      [:div.stat
-       [:div.stat-label "Jobs"]
-       [:div.stat-value (count all-jobs)]]
-      [:div.stat
-       [:div.stat-label "Queue"]
-       [:div.stat-value {:class (if (seq queued) "yellow" "muted")}
-        (count queued)]]
-      [:div.stat
-       [:div.stat-label "Running"]
-       [:div.stat-value {:class (if (seq running) "yellow" "muted")}
-        (reduce + 0 (vals running))]]
-      [:div.stat
-       [:div.stat-label "Passing"]
-       [:div.stat-value.green (:success outcomes)]]
-      [:div.stat
-       [:div.stat-label "Failing"]
-       [:div.stat-value.red (:failure outcomes)]]]
+     (stats-fragment)
 
      (when (seq queued)
        [:div

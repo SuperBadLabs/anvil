@@ -12,6 +12,8 @@
             [anvil.web.views.coverage-page :as coverage-page]
             [anvil.web.jenkins-api.handlers :as jenkins-h]
             [anvil.web.anvil-admin :as anvil-admin]
+            [anvil.web.events-sse :as events-sse]
+            [anvil.web.widgets :as widgets]
             [clojure.data.json :as json]))
 
 (defn- html [body]
@@ -103,6 +105,12 @@
     ["/jobs"          {:get  anvil-admin/list-jobs
                        :post anvil-admin/register-job}]
     ["/jobs/:name"    {:delete anvil-admin/delete-job}]]
+   ;; anvil-native real-time event stream (TU1.3). SSE backed by
+   ;; anvil.events.bus. Topic filter via ?topics= (see events-sse ns).
+   ["/anvil/events"   {:get events-sse/handler}]
+   ;; Live UI widget fragments (TU1.4). Each endpoint here returns
+   ;; HTML hiccup that htmx-sse swaps in on the appropriate bus event.
+   ["/anvil/widgets/dashboard-stats" {:get widgets/dashboard-stats}]
    jenkins-routes])
 
 (defn make-handler

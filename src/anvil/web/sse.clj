@@ -37,11 +37,15 @@
             [org.httpkit.server :as hk]
             [taoensso.timbre :as log]))
 
-(def ^:private heartbeat-interval-ms
-  "Send a `:\\n\\n` comment line every 15s. Standard EventSource
-   semantics — clients ignore comment lines, but proxies see traffic
-   and don't close the connection as idle. 15s is conservative
-   (most proxies idle out at 60s+); plenty of headroom."
+(def default-heartbeat-interval-ms
+  "Send a `:\\n\\n` comment line every 15s by default. Standard
+   EventSource semantics — clients ignore comment lines, but proxies
+   see traffic and don't close the connection as idle. 15s is
+   conservative (most proxies idle out at 60s+); plenty of headroom.
+
+   Callers can override per-connection via the `:heartbeat-ms` option
+   to `open!`. Tests dial it down to ~200ms so disconnect-detection
+   assertions don't take 15s/test."
   15000)
 
 ;; ---------------------------------------------------------------------------
@@ -122,38 +126,62 @@
        (sse/open! req
          {:on-open  (fn [ch] (bus/subscribe! :my-topic ch))
           :on-close (fn []  (bus/unsubscribe-all-by-channel! :my-topic ...))}))"
-  [req {:keys [on-open on-close]}]
-  (hk/as-channel
-   req
-   {:on-open
-    (fn [ch]
-      ;; Prelude: send headers + an opening heartbeat so the browser
-      ;; flips EventSource to OPEN immediately rather than after the
-      ;; first real event.
-      (hk/send! ch
-                {:status  200
-                 :headers (sse-headers)
-                 :body    (heartbeat-frame)}
-                false)
-      ;; Heartbeat loop on a background thread. We don't use a
-      ;; ScheduledExecutorService because anvil already has core.async
-      ;; on the classpath and we want zero new infrastructure here.
-      (let [running (atom true)
-            stop! (fn []
-                    (reset! running false)
-                    (close! ch))]
+  [req {:keys [on-open on-close heartbeat-ms]
+        :or {heartbeat-ms default-heartbeat-interval-ms}}]
+  ;; Per-connection state shared across the as-channel callbacks.
+  (let [running (atom true)]
+    (hk/as-channel
+     req
+     {:on-open
+      (fn [ch]
+        ;; Prelude: send headers + an opening heartbeat so the browser
+        ;; flips EventSource to OPEN immediately rather than after the
+        ;; first real event.
+        (hk/send! ch
+                  {:status  200
+                   :headers (sse-headers)
+                   :body    (heartbeat-frame)}
+                  false)
+        ;; Heartbeat loop on a background thread. We don't use a
+        ;; ScheduledExecutorService because anvil already has core.async
+        ;; on the classpath and we want zero new infrastructure here.
         (future
           (try
             (while @running
-              (Thread/sleep heartbeat-interval-ms)
+              (Thread/sleep ^long heartbeat-ms)
               (when @running
-                (when-not (send-comment! ch)
-                  ;; Channel is gone — stop heartbeating.
-                  (reset! running false))))
+                ;; Heartbeat as live-ness probe. http-kit's (open? ch)
+                ;; flips to false once a previous async write has
+                ;; failed; that lags the actual remote close by ~1 OS
+                ;; write cycle. So we probe AND consult open? — first
+                ;; failed write flips the flag, next iteration exits.
+                (let [wrote-ok (send-comment! ch)]
+                  (when (or (not wrote-ok) (not (hk/open? ch)))
+                    ;; Channel is gone — explicitly close so http-kit
+                    ;; fires :on-close → caller's on-close → bus
+                    ;; cleanup. Note: http-kit's NIO only flips
+                    ;; (open? ch) to false after a write fails AT the
+                    ;; OS layer (i.e. after the kernel rejects). On
+                    ;; an SSE stream where the client never reads, the
+                    ;; kernel may keep accepting our writes long after
+                    ;; the browser tab is gone. Real cleanup arrives
+                    ;; when the OS TCP stack times out (~minutes) OR
+                    ;; the heartbeat write provokes an RST. Caller
+                    ;; must NOT depend on instant cleanup; the bus's
+                    ;; ::unsubscribe self-removal is the other half.
+                    (log/debug "SSE heartbeat detected closed channel; cleaning up")
+                    (reset! running false)
+                    (close! ch)))))
             (catch InterruptedException _
               (reset! running false))))
-        (when on-open (on-open ch))
-        ;; Stash the stopper so on-close can call it.
-        (hk/on-close ch (fn [_status]
-                          (reset! running false)
-                          (when on-close (on-close))))))}))
+        (when on-open (on-open ch)))
+      ;; on-close lives at the as-channel option layer (NOT inside
+      ;; on-open via hk/on-close) — that's the documented path and
+      ;; the one http-kit's NIO loop actually wires up reliably for
+      ;; client-initiated close. Earlier wiring via hk/on-close inside
+      ;; on-open did not fire on TCP FIN; the test for SSE-unsubscribe-
+      ;; on-disconnect caught it.
+      :on-close
+      (fn [_status]
+        (reset! running false)
+        (when on-close (on-close)))})))
