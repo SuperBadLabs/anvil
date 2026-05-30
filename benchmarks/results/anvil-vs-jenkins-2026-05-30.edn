@@ -1,0 +1,31 @@
+{:bench :anvil-vs-jenkins
+ :run-at "2026-05-30T05:00:00Z"
+ :setup {:anvil    {:version "0.1.0" :commit "dc099e4" :port 8765}
+         :jenkins  {:image "jenkins/jenkins:lts-jdk21" :port 8090
+                    :plugins ["workflow-job" "workflow-cps" "workflow-aggregator"]
+                    :java-opts "-Djenkins.install.runSetupWizard=false -Xmx512m"}
+         :note "anvil hit via /jenkins/* compat shim (its only Jenkins-shaped surface)"}
+
+ :rest-latency-ms
+ {:iterations 200
+  :warmup 5
+  :endpoints
+  {:root            {:jenkins {:p50 0.558 :p95 0.835 :p99 1.053 :mean 0.586}
+                     :anvil   {:p50 0.376 :p95 0.476 :p99 0.612 :mean 0.385}
+                     :anvil-faster-by 1.5}
+   :queue           {:jenkins {:p50 0.351 :p95 0.559 :p99 0.853 :mean 0.391}
+                     :anvil   {:p50 0.039 :p95 0.055 :p99 0.069 :mean 0.041}
+                     :anvil-faster-by 9.1}
+   :crumb           {:jenkins {:p50 0.421 :p95 0.615 :p99 0.750 :mean 0.447}
+                     :anvil   {:p50 0.043 :p95 0.060 :p99 0.081 :mean 0.046}
+                     :anvil-faster-by 9.7}
+   :computer        {:jenkins {:p50 0.458 :p95 0.909 :p99 3.229 :mean 0.565}
+                     :anvil   {:p50 0.043 :p95 0.073 :p99 0.103 :mean 0.049}
+                     :anvil-faster-by 10.6}}}
+
+ :build-wallclock-seconds
+ {:pipeline-shape "3-step: echo + sh 'echo' + sh 'echo'"
+  :runs-per-server 5
+  :jenkins {:median 9.96 :min 9.47 :max 10.06}
+  :anvil   {:median 0.10 :min 0.10 :max 0.11}
+  :anvil-faster-by 95.5}}
