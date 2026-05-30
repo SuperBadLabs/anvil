@@ -156,6 +156,32 @@
   []
   (:running-per-job @state))
 
+(defn config-snapshot
+  "Public read of the queue configuration — currently just the worker
+   pool size. Used by the /executors page (TU5.2) to render the
+   physical capacity vs. the running-per-job counters."
+  []
+  {:max-workers (:max-workers @state 0)
+   :workers-running? (some? (:executor @state))})
+
+(defn blocked-reason
+  "Why is this queued item not running yet? Returns a short string
+   or nil if it's eligible to run. Used by the /queue page (TU5.1)
+   so the operator sees \"3 instances of build-x already running\"
+   instead of just \"queued\"."
+  [{:keys [job-name cancelled?]}]
+  (cond
+    cancelled?
+    "cancelled"
+
+    (not (some-> (jobs/find-job job-name))) "job no longer registered"
+
+    :else
+    (let [cap (job-concurrency-cap job-name)
+          cur (running-count job-name)]
+      (when (>= cur cap)
+        (str cur "/" cap " of this job already running")))))
+
 ;; ---------------------------------------------------------------------------
 ;; Worker loop
 ;; ---------------------------------------------------------------------------

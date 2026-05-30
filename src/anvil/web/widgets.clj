@@ -15,7 +15,8 @@
   (:require [hiccup2.core :as h]
             [anvil.version :as v]
             [anvil.web.views.dashboard :as dashboard]
-            [anvil.web.views.jobs-page :as jobs-page]))
+            [anvil.web.views.jobs-page :as jobs-page]
+            [anvil.web.views.queue-page :as queue-page]))
 
 (defn- html-fragment
   "Wrap a hiccup fragment as a bare HTML response."
@@ -36,3 +37,14 @@
   [req]
   (let [job-name (get-in req [:path-params :name])]
     (html-fragment (jobs-page/builds-table-fragment job-name))))
+
+(defn queue
+  "TU5.4: refreshed queue fragment. Fires on any :queue bus event."
+  [_req]
+  (html-fragment (queue-page/queue-fragment)))
+
+(defn executors
+  "TU5.4: refreshed executors fragment. Fires on :build-started /
+   :build-done since those change which slots are busy."
+  [_req]
+  (html-fragment (queue-page/executors-fragment)))

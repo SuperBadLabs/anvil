@@ -59,6 +59,38 @@
     (.mkdirs parent)
     f))
 
+;; ---------------------------------------------------------------------------
+;; TU5.3: in-flight registry + kill action
+;;
+;; v1 kill is best-effort: we interrupt the runner thread. The dispatcher
+;; doesn't yet check an abort flag between steps (that's a chengis-core
+;; addition tracked for v1.1), so an in-flight `sh` will run to its own
+;; completion before the InterruptedException surfaces — but the next
+;; step won't fire, and the build records as :failure with the catch
+;; below converting the exception to a recorded build-end. For queued
+;; (not-yet-running) items, queue/cancel! is the clean path and the
+;; build never starts at all.
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private in-flight (atom {}))
+
+(defn in-flight-snapshot
+  "Vector of {:job-name :build-number :started-at} for everything
+   currently being run by run-build!. Used by /executors view."
+  []
+  (->> @in-flight
+       (map (fn [[[j n] info]] (assoc info :job-name j :build-number n)))
+       (sort-by :started-at)
+       vec))
+
+(defn kill!
+  "Interrupt the runner thread for [job-name build-number]. Returns
+   true if a thread was found + interrupted, false otherwise."
+  [job-name build-number]
+  (when-let [{:keys [thread]} (get @in-flight [job-name build-number])]
+    (.interrupt ^Thread thread)
+    true))
+
 (defn run-build!
   "Run a build for `job-name` (which must be registered) with optional
    `:parameters` and an opt-in `:execute?` (defaults true; TX9).
@@ -91,7 +123,13 @@
       ;; tails `log-file` and publishes per-line :console-line events
       ;; on the [:build job-name number] bus topic. Stopped in the
       ;; finally so a thrown build still cleans up.
-      (let [stop-tail (log-tail/start! job-name number log-file)]
+      ;; TU5.3: also register ourselves in the in-flight map so
+      ;; runner/kill! can interrupt this thread.
+      (let [stop-tail (log-tail/start! job-name number log-file)
+            key [job-name number]]
+        (swap! in-flight assoc key
+               {:thread (Thread/currentThread)
+                :started-at (java.time.Instant/now)})
         (try
           (let [source (:jenkinsfile-source job)
                 base-ir (t/parse source (str job-name "/Jenkinsfile"))
@@ -128,6 +166,20 @@
              :workspace workspace-path
              :log-path log-path})
 
+          (catch InterruptedException _
+            ;; TU5.3: kill! was called on this thread. Record build
+            ;; as :aborted (distinct from :failure so the UI shows
+            ;; a gray badge, not red).
+            (jobs/record-build-end! job-name number
+                                    {:result :aborted
+                                     :effects [[:exception "build aborted by operator"]]
+                                     :log-path log-path})
+            {:build-number number
+             :result :aborted
+             :error "interrupted"
+             :workspace workspace-path
+             :log-path log-path})
+
           (catch Exception e
             (jobs/record-build-end! job-name number
                                     {:result :failure
@@ -140,4 +192,5 @@
              :log-path log-path})
 
           (finally
+            (swap! in-flight dissoc key)
             (stop-tail)))))))

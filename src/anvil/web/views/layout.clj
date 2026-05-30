@@ -199,6 +199,9 @@
   .console-toolbar a:hover { text-decoration: underline; }
   .console-toolbar .elapsed { color: var(--fg); font-family: var(--font-mono); }
 
+  /* Queue + executors (TU5) */
+  .queue-frame, .executors-frame { margin: var(--space-2) 0; }
+
   /* Build form (TU4.1) */
   .form-row { margin: var(--space-3) 0; }
   .form-row label { display: block; color: var(--fg); margin-bottom: var(--space-1); }
@@ -316,6 +319,7 @@
        [:a {:href "/" :class (when (= active :dashboard) "active")} "Dashboard"]
        [:a {:href "/jobs" :class (when (= active :jobs) "active")} "Jobs"]
        [:a {:href "/queue" :class (when (= active :queue) "active")} "Queue"]
+       [:a {:href "/executors" :class (when (= active :executors) "active")} "Executors"]
        [:a {:href "/coverage" :class (when (= active :coverage) "active")} "Coverage"]]
       body-hiccup
       [:footer

@@ -126,7 +126,8 @@
   (testing "GET /queue with empty queue shows the placeholder"
     (let [resp ((routes/make-handler) (get-req "/queue"))]
       (is (= 200 (:status resp)))
-      (is (str/includes? (:body resp) "Nothing queued")))))
+      ;; TU5.1 rewrote the queue placeholder copy.
+      (is (str/includes? (:body resp) "Queue empty.")))))
 
 (deftest queue-page-with-items-test
   (testing "GET /queue shows queued items"

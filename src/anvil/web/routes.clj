@@ -63,6 +63,9 @@
 (defn- handler-queue-page [req]
   (html (queue-page/page req)))
 
+(defn- handler-executors-page [req]
+  (html (queue-page/executors-page req)))
+
 (defn- handler-coverage-page [req]
   (html (coverage-page/page req)))
 
@@ -129,6 +132,10 @@
    ;; /artifact/ is captured wholesale via reitit's :path catch-all.
    ["/jobs/:name/:number/artifact/*path" {:get build-actions/serve-artifact :name ::build-artifact}]
    ["/queue"           {:get handler-queue-page     :name ::queue}]
+   ["/executors"       {:get handler-executors-page :name ::executors}]
+   ;; TU5.3: kill / cancel actions
+   ["/jobs/:name/:number/kill"   {:post build-actions/kill-build :name ::build-kill}]
+   ["/queue/cancel/:queue-id"    {:post build-actions/cancel-queued :name ::queue-cancel}]
    ["/coverage"        {:get handler-coverage-page  :name ::coverage}]
    ;; anvil-internal JSON
    ["/api"
@@ -147,6 +154,8 @@
    ;; HTML hiccup that htmx-sse swaps in on the appropriate bus event.
    ["/anvil/widgets/dashboard-stats"     {:get widgets/dashboard-stats}]
    ["/anvil/widgets/job-builds/:name"    {:get widgets/job-builds}]
+   ["/anvil/widgets/queue"               {:get widgets/queue}]
+   ["/anvil/widgets/executors"           {:get widgets/executors}]
    jenkins-routes])
 
 (defn make-handler
