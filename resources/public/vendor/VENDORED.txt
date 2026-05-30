@@ -1,0 +1,25 @@
+Vendored third-party browser assets for the anvil admin UI.
+
+Doctrine (AU9): anvil ships as a single binary that runs offline. No
+CDN, no auto-update, no phone-home. Every browser asset is committed
+here with a SHA-256 checksum receipt.
+
+To upgrade: download the new file, replace it here, update its SHA-256
+line in this file, and bump the version in the comment. CI will fail
+if the on-disk SHA-256 does not match the receipt (see
+test/anvil/web/vendored_assets_test.clj).
+
+--------------------------------------------------------------------------
+htmx.min.js
+  upstream:   https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js
+  version:    2.0.4
+  license:    BSD-2-Clause Zero  (https://github.com/bigskysoftware/htmx/blob/master/LICENSE)
+  size:       50917 bytes
+  sha256:     e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447
+
+htmx-sse.min.js
+  upstream:   https://unpkg.com/htmx-ext-sse@2.2.2/sse.js
+  version:    2.2.2
+  license:    BSD-2-Clause Zero
+  size:       8896 bytes
+  sha256:     83eca6fa0611fe2b0bf1700b424b88b5eced38ef448ef9760a2ea08fbc875611

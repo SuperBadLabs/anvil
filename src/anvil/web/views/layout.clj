@@ -7,52 +7,138 @@
             [anvil.version :as v]))
 
 (def ^:private css "
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         max-width: 1080px; margin: 2em auto; padding: 0 1em; color: #222; }
-  h1, h2, h3 { color: #111; }
+  /* ── Design tokens (AU8: one stylesheet; AU7: dark via prefers-color-scheme) ─
+     Every color / spacing / type value below references a token. Widgets
+     in TU2+ should consume tokens, not hard-coded hexes. */
+  :root {
+    /* Surfaces */
+    --bg:           #ffffff;
+    --bg-elevated: #f7f7f8;
+    --bg-hover:    #fafbfc;
+    --border:      #eee;
+    --border-strong: #ddd;
+
+    /* Text */
+    --fg:          #222;
+    --fg-strong:   #111;
+    --fg-muted:    #666;
+    --fg-faint:    #888;
+    --fg-ghost:    #999;
+
+    /* Accent + link */
+    --accent:      #1f6feb;
+    --accent-bg:   #ddf4ff;
+
+    /* Semantic */
+    --ok:          #1a7f37;
+    --warn:        #9a6700;
+    --warn-bg:     #fff8c5;
+    --err:         #cf222e;
+    --err-bg:      #ffebe9;
+    --info:        #0969da;
+    --info-bg:     #ddf4ff;
+
+    /* Console */
+    --console-bg:  #0d1117;
+    --console-fg:  #c9d1d9;
+
+    /* Type */
+    --font-sans:   -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono:   ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* Spacing scale (rems-ish, but expressed in em for component-local sizing) */
+    --space-1:     0.25em;
+    --space-2:     0.5em;
+    --space-3:     0.75em;
+    --space-4:     1em;
+    --space-6:     1.5em;
+    --space-8:     2em;
+
+    /* Radii */
+    --radius-1:    4px;
+    --radius-2:    8px;
+
+    /* Layout */
+    --max-width:   1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:           #0d1117;
+      --bg-elevated:  #161b22;
+      --bg-hover:     #1f242c;
+      --border:       #30363d;
+      --border-strong: #444c56;
+      --fg:           #c9d1d9;
+      --fg-strong:    #f0f6fc;
+      --fg-muted:     #8b949e;
+      --fg-faint:     #768390;
+      --fg-ghost:     #6e7681;
+      --accent:       #58a6ff;
+      --accent-bg:    #1f3b66;
+      --ok:           #3fb950;
+      --warn:         #d29922;
+      --warn-bg:      #422d09;
+      --err:          #f85149;
+      --err-bg:       #4c1f22;
+      --info:         #58a6ff;
+      --info-bg:      #1f3b66;
+    }
+  }
+
+  /* ── Base ─────────────────────────────────────────────────────────── */
+  body { font-family: var(--font-sans);
+         max-width: var(--max-width); margin: var(--space-8) auto; padding: 0 var(--space-4);
+         background: var(--bg); color: var(--fg); }
+  h1, h2, h3 { color: var(--fg-strong); }
   h1 { font-size: 2em; margin: 0 0 0.2em; }
-  .tagline { color: #666; font-size: 1em; margin: 0 0 1.5em; }
-  nav { display: flex; gap: 1em; margin-bottom: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.5em; }
-  nav a { color: #1f6feb; text-decoration: none; padding: 0.3em 0; }
-  nav a.active { font-weight: 600; border-bottom: 2px solid #1f6feb; }
+  .tagline { color: var(--fg-muted); font-size: 1em; margin: 0 0 var(--space-6); }
+  nav { display: flex; gap: var(--space-4); margin-bottom: var(--space-6);
+        border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  nav a { color: var(--accent); text-decoration: none; padding: var(--space-1) 0; }
+  nav a.active { font-weight: 600; border-bottom: 2px solid var(--accent); }
   nav a:hover { text-decoration: underline; }
 
-  /* Status cards row */
-  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.8em; margin: 1.2em 0; }
-  .stat { background: #f7f7f8; border-radius: 8px; padding: 1em 1.1em; }
-  .stat-label { color: #888; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em; }
+  /* ── Status cards row ─────────────────────────────────────────────── */
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+              gap: 0.8em; margin: 1.2em 0; }
+  .stat { background: var(--bg-elevated); border-radius: var(--radius-2); padding: var(--space-4) 1.1em; }
+  .stat-label { color: var(--fg-faint); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em; }
   .stat-value { font-size: 1.7em; font-weight: 600; margin-top: 0.2em; }
-  .stat-value.green  { color: #1a7f37; }
-  .stat-value.red    { color: #cf222e; }
-  .stat-value.yellow { color: #9a6700; }
-  .stat-value.muted  { color: #888; }
+  .stat-value.green  { color: var(--ok); }
+  .stat-value.red    { color: var(--err); }
+  .stat-value.yellow { color: var(--warn); }
+  .stat-value.muted  { color: var(--fg-faint); }
 
-  /* Tables */
-  table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-  th, td { text-align: left; padding: 0.55em 0.7em; border-bottom: 1px solid #eee; vertical-align: top; }
-  th { color: #666; font-size: 0.85em; font-weight: 500; text-transform: uppercase; letter-spacing: 0.03em; }
-  tr:hover { background: #fafbfc; }
-  td a { color: #1f6feb; text-decoration: none; }
+  /* ── Tables ───────────────────────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; margin-top: var(--space-4); }
+  th, td { text-align: left; padding: 0.55em 0.7em; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--fg-muted); font-size: 0.85em; font-weight: 500; text-transform: uppercase; letter-spacing: 0.03em; }
+  tr:hover { background: var(--bg-hover); }
+  td a { color: var(--accent); text-decoration: none; }
   td a:hover { text-decoration: underline; }
-  td.muted { color: #999; }
+  td.muted { color: var(--fg-ghost); }
 
-  /* Build-result badges */
-  .badge { display: inline-block; padding: 0.18em 0.55em; border-radius: 4px; font-size: 0.82em; font-weight: 600; }
-  .badge.blue   { background: #ddf4ff; color: #0969da; }
-  .badge.red    { background: #ffebe9; color: #cf222e; }
-  .badge.yellow { background: #fff8c5; color: #9a6700; }
-  .badge.gray   { background: #f0f0f1; color: #666; }
-  .badge.anim   { background: #ddf4ff; color: #0969da; animation: pulse 1.5s infinite; }
+  /* ── Build-result badges ──────────────────────────────────────────── */
+  .badge { display: inline-block; padding: 0.18em 0.55em; border-radius: var(--radius-1); font-size: 0.82em; font-weight: 600; }
+  .badge.blue   { background: var(--info-bg); color: var(--info); }
+  .badge.red    { background: var(--err-bg);  color: var(--err); }
+  .badge.yellow { background: var(--warn-bg); color: var(--warn); }
+  .badge.gray   { background: var(--bg-elevated); color: var(--fg-muted); }
+  .badge.anim   { background: var(--info-bg); color: var(--info); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
 
-  /* Code blocks */
-  code { background: #f0f0f1; padding: 0.12em 0.4em; border-radius: 3px; font-size: 0.9em; }
-  pre.console { background: #0d1117; color: #c9d1d9; padding: 1em 1.2em; border-radius: 8px;
-                font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85em;
-                line-height: 1.4em; max-height: 60vh; overflow: auto; white-space: pre-wrap; word-wrap: break-word; }
+  /* ── Code blocks ──────────────────────────────────────────────────── */
+  code { background: var(--bg-elevated); padding: 0.12em 0.4em; border-radius: 3px; font-size: 0.9em; font-family: var(--font-mono); }
+  pre.console { background: var(--console-bg); color: var(--console-fg);
+                padding: var(--space-4) 1.2em; border-radius: var(--radius-2);
+                font-family: var(--font-mono); font-size: 0.85em;
+                line-height: 1.4em; max-height: 60vh; overflow: auto;
+                white-space: pre-wrap; word-wrap: break-word; }
 
-  /* Footer */
-  footer { margin-top: 3em; color: #999; font-size: 0.85em; border-top: 1px solid #eee; padding-top: 1em; }
+  /* ── Footer ───────────────────────────────────────────────────────── */
+  footer { margin-top: 3em; color: var(--fg-ghost); font-size: 0.85em;
+           border-top: 1px solid var(--border); padding-top: var(--space-4); }
 ")
 
 (defn- color->badge
@@ -78,7 +164,13 @@
       [:title (str (or title "anvil") " · anvil")]
       [:meta {:charset "utf-8"}]
       [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
-      [:style (h/raw css)]]
+      [:meta {:name "color-scheme" :content "light dark"}]
+      [:style (h/raw css)]
+      ;; AU1+AU2+AU9: vendored htmx + SSE extension. Defer so they
+      ;; don't block first paint — the existing pages still render
+      ;; fully without JS; htmx only adds live updates on top.
+      [:script {:src "/public/vendor/htmx.min.js"     :defer true}]
+      [:script {:src "/public/vendor/htmx-sse.min.js" :defer true}]]
      [:body
       [:h1 "anvil"]
       [:p.tagline "Drop-in Jenkins replacement, powered by chengis-core."]

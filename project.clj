@@ -79,9 +79,19 @@
 
   :target-path "target/%s"
 
+  ;; Opt-in browser-test selector (TU0.5). Tag tests with `^:browser`
+  ;; and run `lein test :browser`; default `lein test` excludes them so
+  ;; no contributor needs Firefox+geckodriver installed just to ship.
+  :test-selectors {:default (complement :browser)
+                   :browser :browser
+                   :all (constantly true)}
+
   :profiles {:uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
-             :dev {:dependencies [[org.clojure/test.check "1.1.3"]]}
+             :dev {:dependencies [[org.clojure/test.check "1.1.3"]
+                                  ;; TU0.5: WebDriver wrapper for browser-side
+                                  ;; smoke. Opt-in via `lein test :browser`.
+                                  [etaoin/etaoin "1.1.43"]]}
              ;; TX8 benchmarks — `lein with-profile +bench run -m anvil.bench.runner`
              :bench {:source-paths ["benchmarks/src"]
                      :dependencies [[criterium/criterium "0.4.6"]]

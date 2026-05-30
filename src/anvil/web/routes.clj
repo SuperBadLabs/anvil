@@ -111,12 +111,20 @@
   []
   (-> (ring/ring-handler
        (ring/router routes)
-       (ring/create-default-handler
-        {:not-found (fn [_]
-                      {:status 404
-                       :headers {"Content-Type" "text/plain"
-                                 "X-Anvil-Version" v/version}
-                       :body "anvil: 404 — route not found"})}))
+       ;; Default chain: static /public/* assets (vendored htmx etc. from
+       ;; resources/public/), then 404. Resource handler is anvil-internal:
+       ;; never serves /etc/passwd-style paths because it's rooted at the
+       ;; classpath /public prefix.
+       (ring/routes
+        (ring/create-resource-handler
+         {:path "/public/"
+          :root "public"})
+        (ring/create-default-handler
+         {:not-found (fn [_]
+                       {:status 404
+                        :headers {"Content-Type" "text/plain"
+                                  "X-Anvil-Version" v/version}
+                        :body "anvil: 404 — route not found"})})))
       ;; Form + query param parsing — Jenkins' buildWithParameters
       ;; needs both.
       ring-params/wrap-params))
