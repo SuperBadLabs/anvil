@@ -202,6 +202,48 @@
   /* Queue + executors (TU5) */
   .queue-frame, .executors-frame { margin: var(--space-2) 0; }
 
+  /* First-run CTA (TU6.1) */
+  .first-run { background: var(--bg-elevated); border-radius: var(--radius-2);
+               padding: var(--space-6); margin: var(--space-6) 0;
+               border-left: 4px solid var(--accent); }
+  .first-run h3 { margin-top: 0; }
+  .first-run pre.console { max-height: none; font-size: 0.8em; }
+  .first-run ol { padding-left: 1.2em; }
+  .first-run li { margin: var(--space-3) 0; }
+  .empty-state-mini { background: var(--bg-elevated); border-radius: var(--radius-1);
+                      padding: var(--space-3) var(--space-4); margin: var(--space-3) 0; }
+
+  /* ── Mobile-passable (TU6.2 / AU7) ────────────────────────────────
+     Doctrine: read-only on a phone is fine; input forms can stay
+     desktop-first. Targets viewports up to 720px wide. */
+  @media (max-width: 720px) {
+    body { margin: var(--space-3) auto; padding: 0 var(--space-3); font-size: 16px; }
+    h1 { font-size: 1.5em; }
+    nav { flex-wrap: wrap; gap: var(--space-3); }
+    nav a { padding: var(--space-2) 0; min-height: 32px; }
+    .tagline { font-size: 0.9em; }
+    .stat-row { grid-template-columns: repeat(2, 1fr); gap: var(--space-2); }
+    .stat { padding: var(--space-3) var(--space-3); }
+    .stat-value { font-size: 1.4em; }
+    /* Tables on phones: hide the muted timestamp columns to keep
+       things readable; the rows are still fully interactive. */
+    table { font-size: 0.92em; }
+    table th, table td { padding: 0.5em 0.4em; }
+    td.muted { display: none; }
+    /* Console-pre fits the viewport instead of overflowing horizontally */
+    pre.console { font-size: 0.78em; padding: var(--space-3); }
+    /* Compare grid stacks rather than splitting */
+    .compare-grid { grid-template-columns: 1fr; }
+    .first-run { padding: var(--space-4); }
+    .first-run pre.console { font-size: 0.7em; }
+    /* Build form fields full-width on mobile */
+    .form-row input[type=text],
+    .form-row input[type=password],
+    .form-row input[type=number],
+    .form-row select,
+    .form-row textarea { max-width: 100%; }
+  }
+
   /* Build form (TU4.1) */
   .form-row { margin: var(--space-3) 0; }
   .form-row label { display: block; color: var(--fg); margin-bottom: var(--space-1); }

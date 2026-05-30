@@ -1,4 +1,4 @@
-(defproject anvil/anvil "0.1.0-SNAPSHOT"
+(defproject anvil/anvil "0.2.0-SNAPSHOT"
   :description
   "anvil — a free, OSS, single-team CI server that runs your Jenkinsfile.
 
@@ -82,9 +82,13 @@
   ;; Opt-in browser-test selector (TU0.5). Tag tests with `^:browser`
   ;; and run `lein test :browser`; default `lein test` excludes them so
   ;; no contributor needs Firefox+geckodriver installed just to ship.
-  :test-selectors {:default (complement :browser)
-                   :browser :browser
-                   :all (constantly true)}
+  ;; Default `lein test` excludes both :browser and :tour-capture.
+  ;; :browser is the etaoin functional smoke; :tour-capture writes
+  ;; screenshots + a perf receipt to docs/anvil-ui/tour/, opt-in only.
+  :test-selectors {:default       #(not (or (:browser %) (:tour-capture %)))
+                   :browser       :browser
+                   :tour-capture  :tour-capture
+                   :all           (constantly true)}
 
   :profiles {:uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}

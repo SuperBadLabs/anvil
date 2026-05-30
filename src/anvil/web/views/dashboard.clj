@@ -2,6 +2,7 @@
   "Main dashboard — landing page. Shows the operator: how many jobs,
    how many builds, what's running right now, recent build outcomes."
   (:require [anvil.web.views.layout :as layout]
+            [anvil.web.views.empty-state :as empty-state]
             [anvil.web.jenkins-api.jobs :as jobs]
             [anvil.web.jenkins-api.queue :as queue]))
 
@@ -118,8 +119,8 @@
             [:td (if-let [lsb (:last-successful-build j)]
                    [:a {:href (str "/jobs/" (:name j) "/" lsb)} (str "#" lsb)]
                    [:span.muted "—"])]])]]
-       [:p.muted "No jobs registered yet. Use "
-        [:code "anvil import jenkinsfile <path>"] " to convert a Jenkinsfile."])
+       ;; TU6.1: real first-run CTA instead of a one-liner.
+       (empty-state/first-run-cta))
 
      [:h3 "Quick links"]
      [:ul

@@ -8,6 +8,7 @@
    TU3.6: jobs-list table grows a sparkline column."
   (:require [anvil.web.views.layout :as layout]
             [anvil.web.views.sparkline :as spark]
+            [anvil.web.views.empty-state :as empty-state]
             [anvil.web.jenkins-api.jobs :as jobs]))
 
 (defn- duration-str [ms]
@@ -36,8 +37,7 @@
      {:title "Jobs" :active :jobs}
      [:h2 "Jobs (" (count js) ")"]
      (if (empty? js)
-       [:p.muted "No jobs registered yet. Use "
-        [:code "anvil import jenkinsfile <path>"] " to register one."]
+       (empty-state/first-run-cta)
        [:table
         [:thead
          [:tr [:th "Name"] [:th "Status"] [:th "Builds"] [:th "Recent"]
@@ -85,8 +85,7 @@
       :hx-trigger "sse:build-started, sse:build-done"
       :hx-swap "outerHTML"}
      (if (empty? builds)
-       [:p.muted "No builds yet. Trigger one via the Jenkins REST shim or "
-        [:code "anvil build " job-name] " (when the CLI lands)."]
+       (empty-state/no-builds-cta job-name)
        [:table
         [:thead
          [:tr [:th "#"] [:th "Result"] [:th "Duration"] [:th "Started"] [:th "Ended"]]]
