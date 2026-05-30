@@ -199,6 +199,39 @@
   .console-toolbar a:hover { text-decoration: underline; }
   .console-toolbar .elapsed { color: var(--fg); font-family: var(--font-mono); }
 
+  /* Retry button (TU3.3) */
+  .btn-retry { background: var(--accent); color: white; border: none;
+               border-radius: var(--radius-1); padding: var(--space-2) var(--space-3);
+               font-size: 0.85em; cursor: pointer; }
+  .btn-retry:hover { opacity: 0.9; }
+
+  /* Param-diff list (TU3.2) */
+  dl.diff-list > div { margin: var(--space-2) 0; padding: var(--space-2) var(--space-3);
+                       background: var(--bg-elevated); border-radius: var(--radius-1); }
+  dl.diff-list dt { display: inline; color: var(--fg); margin-right: var(--space-2); }
+  dl.diff-list dd { display: inline; margin: 0; color: var(--fg-muted); }
+
+  /* Compare-grid (TU3.4) */
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+  .compare-head { padding: var(--space-2) var(--space-3); color: var(--fg-muted);
+                  border-bottom: 1px solid var(--border); }
+  .compare-col  { padding: var(--space-2); border-left: 3px solid transparent; }
+  .stage-card   { background: var(--bg-elevated); border-radius: var(--radius-1);
+                  padding: var(--space-2) var(--space-3); }
+  .stage-card.failed { border-left: 3px solid var(--err); }
+  .stage-card-head { color: var(--fg); margin-bottom: var(--space-2); }
+  ul.steps-mini { list-style: none; padding: 0; margin: 0; }
+  ul.steps-mini li { font-size: 0.85em; margin: 0.2em 0; color: var(--fg-muted); }
+  ul.steps-mini code { background: transparent; color: var(--fg); }
+
+  /* Per-job sparkline (TU3.6) */
+  .job-sparkline { display: inline-block; vertical-align: middle; }
+  .job-sparkline rect { transition: opacity 120ms; }
+  .job-sparkline:hover rect { opacity: 0.85; }
+
+  /* Builds-table live frame (TU3.1) */
+  .builds-table-frame { margin-top: var(--space-2); }
+
   /* Per-step duration SVG (TU2.8) */
   .duration-chart { width: 100%; height: auto; margin: var(--space-3) 0; }
   .duration-chart .bar { fill: var(--accent); }

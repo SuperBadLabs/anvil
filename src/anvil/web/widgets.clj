@@ -14,7 +14,8 @@
    can spot a daemon restart)."
   (:require [hiccup2.core :as h]
             [anvil.version :as v]
-            [anvil.web.views.dashboard :as dashboard]))
+            [anvil.web.views.dashboard :as dashboard]
+            [anvil.web.views.jobs-page :as jobs-page]))
 
 (defn- html-fragment
   "Wrap a hiccup fragment as a bare HTML response."
@@ -28,3 +29,10 @@
 
 (defn dashboard-stats [_req]
   (html-fragment (dashboard/stats-fragment)))
+
+(defn job-builds
+  "TU3.1: refreshed builds-table fragment for the per-job page. Fires
+   on sse:build-started / sse:build-done on the [:job <name>] topic."
+  [req]
+  (let [job-name (get-in req [:path-params :name])]
+    (html-fragment (jobs-page/builds-table-fragment job-name))))

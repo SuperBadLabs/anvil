@@ -1,13 +1,96 @@
 (ns anvil.web.views.build-page
-  "Per-build page — shows the full console log + metadata."
+  "Per-build page — TU3.2 + TU3.3.
+
+   Top stripe: build #, status badge, timing.
+   Toolbar: link to console, retry button, link to compare, artifacts.
+   Body: steps timeline (per-stage rollup), parameters block,
+         param-diff vs last-successful build (honest v1 of 'env-diff').
+   Effects block: keep, but folded by default — useful for
+                  engine-level debugging."
   (:require [anvil.web.views.layout :as layout]
-            [anvil.web.jenkins-api.jobs :as jobs]))
+            [anvil.web.jenkins-api.jobs :as jobs]
+            [anvil.web.build-summary :as summary]))
+
+(defn- result-badge [b]
+  (cond
+    (:building? b)           [:span.badge.anim "running"]
+    (= :success  (:result b)) [:span.badge.blue "success"]
+    (= :failure  (:result b)) [:span.badge.red  "failure"]
+    (= :unstable (:result b)) [:span.badge.yellow "unstable"]
+    (= :aborted  (:result b)) [:span.badge.gray "aborted"]
+    :else                     [:span.badge.gray "—"]))
+
+(defn- step-row [{:keys [cmd exit cwd]}]
+  [:tr
+   [:td (cond
+          (nil? exit)             [:span.badge.gray "—"]
+          (zero? exit)            [:span.badge.blue "ok"]
+          :else                   [:span.badge.red  (str "exit " exit)])]
+   [:td [:code cmd]]
+   [:td.muted (or cwd "")]])
+
+(defn- stage-block [{:keys [stage steps failed?]}]
+  [:details.stage-fold {:open (or failed? false)}
+   [:summary
+    [:span (or stage "<unnamed>")]
+    [:span.stage-meta
+     (str (count steps) " step" (when-not (= 1 (count steps)) "s"))
+     (when failed? " — failed")]]
+   (if (empty? steps)
+     [:p.muted "(no commands recorded for this stage)"]
+     [:table
+      [:thead [:tr [:th "Status"] [:th "Command"] [:th "Cwd"]]]
+      [:tbody (for [s steps] (step-row s))]])])
+
+(defn- param-diff-block [b last-green]
+  (let [diff (summary/param-diff (:parameters last-green) (:parameters b))
+        empty? (and (empty? (:added diff))
+                    (empty? (:removed diff))
+                    (empty? (:changed diff)))]
+    (when last-green
+      [:div
+       [:h3 "Parameter diff vs last green ("
+        [:a {:href (str "/jobs/" (:job-name b) "/" (:number last-green))}
+         "#" (:number last-green)] ")"]
+       (cond
+         (= (:number b) (:number last-green))
+         [:p.muted "(this IS the last green build)"]
+
+         empty?
+         [:p.muted "no parameter differences"]
+
+         :else
+         [:dl.diff-list
+          (concat
+           (for [[k v] (:added diff)]
+             [:div
+              [:dt [:span.badge.blue "added"] " " [:code (str k)]]
+              [:dd [:code (pr-str v)]]])
+           (for [[k v] (:removed diff)]
+             [:div
+              [:dt [:span.badge.gray "removed"] " " [:code (str k)]]
+              [:dd [:code (pr-str v)]]])
+           (for [[k [old new]] (:changed diff)]
+             [:div
+              [:dt [:span.badge.yellow "changed"] " " [:code (str k)]]
+              [:dd
+               [:code.muted (pr-str old)] " → " [:code (pr-str new)]]]))])
+       [:p.muted "(Param diff shown today; full env-var diff lands once "
+        [:code "build-env"] " values are persisted with each build — TU3.x.)"]])))
 
 (defn build-detail [req]
   (let [job-name (get-in req [:path-params :name])
         n (try (Integer/parseInt (str (get-in req [:path-params :number])))
                (catch Exception _ nil))
-        b (when n (jobs/find-build job-name n))]
+        b (when n (jobs/find-build job-name n))
+        b (when b (assoc b :job-name job-name))
+        last-green-n (when b
+                       (let [job (jobs/find-job job-name)
+                             lsb (:last-successful-build job)]
+                         (when (and lsb (not= lsb (:number b))) lsb)))
+        last-green (when last-green-n (jobs/find-build job-name last-green-n))
+        stages (when b (summary/steps-by-stage (:effects b)))
+        agg (when b (summary/step-summary (:effects b)))]
     (if-not b
       (layout/page
        {:title "Build not found" :active :jobs}
@@ -15,32 +98,56 @@
        [:p [:a {:href (str "/jobs/" job-name)} "← back to " job-name]])
       (layout/page
        {:title (str job-name " #" n) :active :jobs}
-       [:h2 job-name " " [:code (str "#" n)]
-        " "
-        (cond
-          (:building? b)         [:span.badge.anim "running"]
-          (= :success (:result b)) [:span.badge.blue "success"]
-          (= :failure (:result b)) [:span.badge.red  "failure"]
-          :else                    [:span.badge.gray "—"])]
+       [:h2 job-name " " [:code (str "#" n)] " " (result-badge b)]
        [:p.muted
         [:a {:href (str "/jobs/" job-name)} (str "← " job-name)]
+        " · "
+        (or (:stage-count agg) 0) " stage" (when-not (= 1 (:stage-count agg)) "s")
+        " · "
+        (or (:step-count agg) 0) " step" (when-not (= 1 (:step-count agg)) "s")
+        (when (pos? (or (:failed-step-count agg) 0))
+          [:span " · " [:span.badge.red (str (:failed-step-count agg) " failed")]])
         " · "
         "started " (str (:started-at b))
         (when-let [e (:ended-at b)] (str " · ended " e))
         (when-let [d (:duration-ms b)] (str " · " d " ms"))]
 
-       [:h3 "Console"]
-       [:pre.console (jobs/console-log-for b)]
+       ;; Toolbar (TU3 navigation strip)
+       [:div.console-toolbar
+        [:a {:href (str "/jobs/" job-name "/" n "/console")} "📜 Console"]
+        " · "
+        (when last-green-n
+          [:a {:href (str "/jobs/" job-name "/" n "/compare?vs=" last-green-n)}
+           "⟷ Compare vs last green (#" last-green-n ")"])
+        " · "
+        [:a {:href (str "/jobs/" job-name "/" n "/artifacts")} "📦 Artifacts"]
+        " · "
+        ;; TU3.3 retry button. POST → redirect to the new build page.
+        ;; htmx posts so the page doesn't navigate away yet — server
+        ;; sends an HX-Redirect header to bounce.
+        [:button {:type "button"
+                  :hx-post (str "/jobs/" job-name "/" n "/retry")
+                  :hx-confirm (str "Retry build #" n " with the same parameters?")
+                  :class "btn-retry"}
+         "↻ Retry build"]]
 
-       (when (seq (:effects b))
-         [:div
-          [:h3 (str "Effects (" (count (:effects b)) ")")]
-          [:pre.console (with-out-str
-                          (binding [clojure.pprint/*print-right-margin* 120]
-                            (clojure.pprint/pprint (:effects b))))]])
+       [:h3 "Steps"]
+       (if (seq stages)
+         (for [s stages] (stage-block s))
+         [:p.muted "No stages recorded yet."])
+
+       (param-diff-block b last-green)
 
        (when (seq (:parameters b))
          [:div
-          [:h3 "Parameters"]
+          [:h3 "Parameters (this build)"]
           [:pre.console (with-out-str
-                          (clojure.pprint/pprint (:parameters b)))]])))))
+                          (clojure.pprint/pprint (:parameters b)))]])
+
+       (when (seq (:effects b))
+         [:details
+          [:summary [:h3 {:style "display:inline"}
+                     (str "Raw effects (" (count (:effects b)) ")")]]
+          [:pre.console (with-out-str
+                          (binding [clojure.pprint/*print-right-margin* 120]
+                            (clojure.pprint/pprint (:effects b))))]])))))

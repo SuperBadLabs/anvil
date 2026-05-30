@@ -15,7 +15,10 @@
             [anvil.web.events-sse :as events-sse]
             [anvil.web.widgets :as widgets]
             [anvil.web.views.console-page :as console-page]
+            [anvil.web.views.compare-page :as compare-page]
+            [anvil.web.views.artifacts-page :as artifacts-page]
             [anvil.web.console-dl :as console-dl]
+            [anvil.web.build-actions :as build-actions]
             [clojure.data.json :as json]))
 
 (defn- html [body]
@@ -48,6 +51,12 @@
   (if (get-in req [:query-params "download"])
     (console-dl/handler req)
     (html (console-page/page req))))
+
+(defn- handler-build-compare [req]
+  (html (compare-page/page req)))
+
+(defn- handler-build-artifacts [req]
+  (html (artifacts-page/page req)))
 
 (defn- handler-queue-page [req]
   (html (queue-page/page req)))
@@ -102,7 +111,14 @@
    ["/jobs"            {:get handler-jobs-list      :name ::jobs}]
    ["/jobs/:name"      {:get handler-job-detail     :name ::job-detail}]
    ["/jobs/:name/:number" {:get handler-build-detail :name ::build-detail}]
-   ["/jobs/:name/:number/console" {:get handler-build-console :name ::build-console}]
+   ["/jobs/:name/:number/console"   {:get handler-build-console :name ::build-console}]
+   ["/jobs/:name/:number/compare"   {:get handler-build-compare :name ::build-compare}]
+   ["/jobs/:name/:number/artifacts" {:get handler-build-artifacts :name ::build-artifacts}]
+   ;; TU3.3: trigger a retry (POST). Same params as the original build.
+   ["/jobs/:name/:number/retry"     {:post build-actions/retry :name ::build-retry}]
+   ;; TU3.5: serve a single artifact file. Path segment after
+   ;; /artifact/ is captured wholesale via reitit's :path catch-all.
+   ["/jobs/:name/:number/artifact/*path" {:get build-actions/serve-artifact :name ::build-artifact}]
    ["/queue"           {:get handler-queue-page     :name ::queue}]
    ["/coverage"        {:get handler-coverage-page  :name ::coverage}]
    ;; anvil-internal JSON
@@ -120,7 +136,8 @@
    ["/anvil/events"   {:get events-sse/handler}]
    ;; Live UI widget fragments (TU1.4). Each endpoint here returns
    ;; HTML hiccup that htmx-sse swaps in on the appropriate bus event.
-   ["/anvil/widgets/dashboard-stats" {:get widgets/dashboard-stats}]
+   ["/anvil/widgets/dashboard-stats"     {:get widgets/dashboard-stats}]
+   ["/anvil/widgets/job-builds/:name"    {:get widgets/job-builds}]
    jenkins-routes])
 
 (defn make-handler
