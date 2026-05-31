@@ -1,0 +1,35 @@
+{:description "Hand-rolled Chengisfile equivalent of jenkinsci/jenkins's own
+               Jenkinsfile, written in chengis-native EDN form. Used by
+               anvil.bench.anvil-vs-chengis to compare orchestration tax
+               between the anvil-Jenkins path and chengis-native.
+
+               Mirrors the four-stage shape (Record / Build / Test / Publish)
+               at roughly the leaf-step count of the real Jenkinsfile —
+               sufficient that the dispatch-tax comparison reflects work of
+               comparable size."
+
+ :stages
+ [{:name  "Record build"
+   :steps [{:name "Verify"       :run "launchable verify"}
+           {:name "Record build" :run "launchable record build --name $BUILD_TAG --source jenkinsci/jenkins=."}
+           {:name "Record commit (ath)" :run "launchable record commit"}
+           {:name "Record commit (bom)" :run "launchable record commit"}]}
+
+  {:name  "Checkout/Build"
+   :steps [{:name "Checkout SCM" :run "git checkout"}
+           {:name "Maven build"  :run "mvn -Pdebug -Penable-jacoco --update-snapshots clean install"}
+           {:name "Verify clean" :run "git add . && git diff --exit-code HEAD"}]}
+
+  {:name  "Test"
+   :steps [{:name "Subset tests" :run "launchable subset --session $SESSION --target 100% --get-tests-from-previous-sessions --output-exclusion-rules maven"}
+           {:name "Run JUnit"    :run "mvn -Dsurefire.excludesFile=$EXCLUDES test"}
+           {:name "Record tests" :run "launchable record tests --session $SESSION maven ./**/target/surefire-reports"}]}
+
+  {:name  "Publish"
+   :steps [{:name "Archive artifacts" :run "tar czf surefire-dumps.tgz **/target/surefire-reports/*.dumpstream"}
+           {:name "Record coverage"   :run "report-coverage --parser JACOCO --pattern coverage/target/site/jacoco-aggregate/jacoco.xml"}
+           {:name "Record issues"     :run "record-issues --tools java,spotbugs,checkstyle,eslint,stylelint"}]}]
+
+ :post {:always     [{:name "Cleanup"        :run "rm -rf tmp"}]
+        :on-success [{:name "Notify success" :run "echo build OK"}]
+        :on-failure [{:name "Alert"          :run "echo build FAILED"}]}}

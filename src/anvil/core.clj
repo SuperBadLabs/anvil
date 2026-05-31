@@ -16,7 +16,8 @@
             [anvil.web.jenkins-api.runner :as runner]
             [anvil.cli.core :as cli]
             [anvil.storage.db :as db]
-            [anvil.version :as v])
+            [anvil.version :as v]
+            [chengis.product :as product])
   (:import [java.util.concurrent CountDownLatch])
   (:gen-class))
 
@@ -58,8 +59,14 @@
 
 (defn -main
   "Anvil entry point. Bare invocation starts the daemon; subcommands route
-   to the CLI dispatcher."
+   to the CLI dispatcher.
+
+   Declares the `:anvil` product profile via `chengis.product/set-profile!`
+   as the first thing it does — chengis-core subsystems gated on profile
+   (DB-type fit, capability registry) need this set before they touch
+   config or schema. See docs/architecture/anvil-vs-chengis-boundary.md."
   [& args]
+  (product/set-profile! :anvil)
   (let [args (vec args)
         first-arg (first args)
         is-daemon-invocation? (or (empty? args)
