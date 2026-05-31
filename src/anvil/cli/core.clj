@@ -9,7 +9,10 @@
      help                      — print top-level usage"
   (:require [clojure.string :as str]
             [anvil.cli.import-jenkinsfile :as import-jf]
-            [anvil.version :as v]))
+            [anvil.version :as v]
+            [chengis.config :as config]
+            [chengis.product :as product]
+            [chengis.product.capability :as capability]))
 
 (defn print-top-level-usage []
   (println)
@@ -22,8 +25,18 @@
   (println "  import jenkinsfile <path>    Convert a Jenkinsfile to a Chengisfile")
   (println "  import jenkins-server <url>  (TX7 phase 2) Bulk import from a Jenkins controller")
   (println "  build <pipeline>             (TX5/TX9) Run a pipeline locally")
+  (println "  list-capabilities            Show the capability registry + effective state for this product")
   (println "  help                         Print this message")
   (println))
+
+(defn- run-list-capabilities []
+  ;; Anvil's -main is what normally sets the profile; CLI subcommands
+  ;; run before -main may have done so, so set it idempotently here.
+  (product/set-profile! :anvil)
+  (let [cfg (try (config/load-config) (catch Exception _ {}))]
+    (print (capability/format-listing {:cfg cfg :profile :anvil}))
+    (flush))
+  0)
 
 (defn dispatch
   "Main dispatch — given the full argv (subcommand + rest), route to the
@@ -56,6 +69,9 @@
 
         "build"
         (do (println "ERROR: build subcommand not yet implemented (TX5/TX9)") 3)
+
+        "list-capabilities"
+        (run-list-capabilities)
 
         (do (println (str "ERROR: unknown subcommand: " cmd))
             (print-top-level-usage)
