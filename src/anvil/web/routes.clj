@@ -20,6 +20,8 @@
             [anvil.web.views.artifacts-page :as artifacts-page]
             [anvil.web.views.build-form :as build-form]
             [anvil.web.views.job-create-page :as job-create]
+            [anvil.web.views.secrets-page :as secrets-page]
+            [anvil.features :as features]
             [anvil.web.console-dl :as console-dl]
             [anvil.web.build-actions :as build-actions]
             [ring.middleware.cookies :as ring-cookies]
@@ -148,6 +150,11 @@
    ["/jobs/:name/:number/kill"   {:post build-actions/kill-build :name ::build-kill}]
    ["/queue/cancel/:queue-id"    {:post build-actions/cancel-queued :name ::queue-cancel}]
    ["/coverage"        {:get handler-coverage-page  :name ::coverage}]
+   ;; v0.3 T6.6 — Secrets admin page (gated by :secrets feature flag
+   ;; AND :anvil.secrets/admin-ips in anvil.edn).
+   ["/secrets"
+    {:get (features/wrap-feature :secrets secrets-page/page)
+     :name ::secrets}]
    ;; anvil-internal JSON
    ["/api"
     ["/status" {:get handler-api-status :name ::api-status}]
