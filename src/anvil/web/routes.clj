@@ -12,6 +12,7 @@
             [anvil.web.views.coverage-page :as coverage-page]
             [anvil.web.jenkins-api.handlers :as jenkins-h]
             [anvil.web.anvil-admin :as anvil-admin]
+            [anvil.web.webhooks-github :as webhooks-github]
             [anvil.web.events-sse :as events-sse]
             [anvil.web.widgets :as widgets]
             [anvil.web.views.console-page :as console-page]
@@ -157,6 +158,10 @@
     ["/jobs"          {:get  anvil-admin/list-jobs
                        :post anvil-admin/register-job}]
     ["/jobs/:name"    {:delete anvil-admin/delete-job}]]
+   ;; T3.3 — GitHub webhook receiver. Gated on :pr-checks feature
+   ;; flag at the handler level (returns 503 when off) rather than
+   ;; at the route layer so the URL remains stable for github to hit.
+   ["/anvil/webhooks/github" {:post webhooks-github/handler}]
    ;; anvil-native real-time event stream (TU1.3). SSE backed by
    ;; anvil.events.bus. Topic filter via ?topics= (see events-sse ns).
    ["/anvil/events"   {:get events-sse/handler}]

@@ -14,6 +14,7 @@
             [anvil.web.views.problems :as problems-view]
             [anvil.storage.test-results :as tr-store]
             [anvil.storage.problems :as problems-store]
+            [anvil.integration.github :as gh]
             [anvil.features :as features]))
 
 (defn- result-badge [b]
@@ -116,6 +117,17 @@
         "started " (str (:started-at b))
         (when-let [e (:ended-at b)] (str " · ended " e))
         (when-let [d (:duration-ms b)] (str " · " d " ms"))]
+
+       ;; v0.3 T3.6 — PR-check pill. Shown when :pr-checks flag is on
+       ;; AND the bus subscriber recorded a check-run for this build.
+       (when (features/enabled? :pr-checks)
+         (when-let [cr (gh/check-run-for job-name n)]
+           [:p.pr-check-pill
+            [:strong "GitHub check: "]
+            [:a {:href (str "https://github.com/" (:repo cr)
+                            "/runs/" (:check-run-id cr))
+                 :target "_blank" :rel "noopener"}
+             (str (:repo cr) " #" (:check-run-id cr))]]))
 
        ;; Toolbar (TU3 navigation strip)
        [:div.console-toolbar
