@@ -9,6 +9,7 @@
      help                      — print top-level usage"
   (:require [clojure.string :as str]
             [anvil.cli.import-jenkinsfile :as import-jf]
+            [anvil.cli.secrets :as secrets-cli]
             [anvil.version :as v]
             [chengis.config :as config]
             [chengis.product :as product]
@@ -72,6 +73,9 @@
 
         "list-capabilities"
         (run-list-capabilities)
+
+        "secrets"
+        (secrets-cli/run (vec rest))
 
         (do (println (str "ERROR: unknown subcommand: " cmd))
             (print-top-level-usage)
