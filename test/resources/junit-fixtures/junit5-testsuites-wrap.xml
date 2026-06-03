@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="all" tests="5" failures="1" errors="0" skipped="1" time="0.567">
+  <testsuite name="com.example.StringUtilsTest" tests="3" failures="1" errors="0" skipped="0" time="0.345" timestamp="2026-06-03T10:00:00">
+    <properties>
+      <property name="java.version" value="21.0.1"/>
+    </properties>
+    <testcase classname="com.example.StringUtilsTest" name="reverses_palindrome()" time="0.011"/>
+    <testcase classname="com.example.StringUtilsTest" name="reverses_empty()" time="0.005"/>
+    <testcase classname="com.example.StringUtilsTest" name="rejects_null()" time="0.029">
+      <failure message="expected NullPointerException, got nothing" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected NullPointerException, got nothing
+	at com.example.StringUtilsTest.rejects_null(StringUtilsTest.java:51)</failure>
+    </testcase>
+    <system-out>Reversing palindromes is a thing now</system-out>
+  </testsuite>
+  <testsuite name="com.example.ParsingTest" tests="2" failures="0" errors="0" skipped="1" time="0.222">
+    <testcase classname="com.example.ParsingTest" name="parsesValidJson()" time="0.220"/>
+    <testcase classname="com.example.ParsingTest" name="parsesBenchmarkCorpus()" time="0.0">
+      <skipped message="not implemented yet"/>
+    </testcase>
+  </testsuite>
+</testsuites>

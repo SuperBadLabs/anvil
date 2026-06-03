@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd"
+           name="com.example.CacheBenchTest" tests="6" failures="0" errors="0" skipped="0"
+           time="2.234" timestamp="2026-06-03T10:02:00" hostname="dogfood-host">
+  <properties>
+    <property name="java.runtime.version" value="21.0.1+12"/>
+    <property name="java.vm.version" value="21.0.1+12"/>
+    <property name="surefire.test.class.path" value="..."/>
+  </properties>
+  <testcase classname="com.example.CacheBenchTest" name="warmupRoundTrip" time="0.115"/>
+  <testcase classname="com.example.CacheBenchTest" name="hitRateAt99Percent" time="0.412"/>
+  <testcase classname="com.example.CacheBenchTest" name="evictionUnderPressure" time="0.555"/>
+  <testcase classname="com.example.CacheBenchTest" name="concurrentReadersDoNotBlock" time="0.622"/>
+  <testcase classname="com.example.CacheBenchTest" name="ttlExpiry" time="0.388"/>
+  <testcase classname="com.example.CacheBenchTest" name="manualInvalidate" time="0.142"/>
+  <system-out><![CDATA[2026-06-03 10:02:00 INFO  CacheBench started
+2026-06-03 10:02:02 INFO  CacheBench done — 6 cases passed]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

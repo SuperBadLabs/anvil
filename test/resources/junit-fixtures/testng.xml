@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="TestNG suite — integration" tests="3" failures="1" errors="0" skipped="0" time="1.500"
+           hostname="ci-worker-3" timestamp="2026-06-03T10:01:00Z" id="0" package="com.example.it">
+  <testcase classname="com.example.it.LoginIT" name="successfulLogin" time="0.812" groups="smoke">
+  </testcase>
+  <testcase classname="com.example.it.LoginIT" name="lockedAccount" time="0.350" groups="regression">
+    <failure message="Locked account did not redirect" type="java.lang.AssertionError">java.lang.AssertionError: Locked account did not redirect
+	at org.testng.Assert.fail(Assert.java:97)
+	at com.example.it.LoginIT.lockedAccount(LoginIT.java:127)</failure>
+  </testcase>
+  <testcase classname="com.example.it.LoginIT" name="invalidPassword" time="0.338" groups="regression"/>
+</testsuite>
