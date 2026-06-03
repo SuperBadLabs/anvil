@@ -1,0 +1,32 @@
+[Unit]
+Description=anvil CI server (dogfood) — superbadlabs/anvil v0.2.1
+Documentation=https://github.com/SuperBadLabs/anvil
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=srikanth
+Group=srikanth
+WorkingDirectory=/home/srikanth/anvil-dogfood
+Environment="ANVIL_DATA=/home/srikanth/anvil-dogfood/data"
+Environment="ANVIL_WORKSPACE_ROOT=/home/srikanth/anvil-dogfood/workspaces"
+Environment="ANVIL_ARTIFACTS_ROOT=/home/srikanth/anvil-dogfood/artifacts"
+ExecStart=/usr/bin/java \
+  --enable-native-access=ALL-UNNAMED \
+  -Xmx512m -Xms128m \
+  -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
+  -jar /opt/anvil/anvil.jar run --port 8765
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:/home/srikanth/anvil-dogfood/logs/anvil.log
+StandardError=append:/home/srikanth/anvil-dogfood/logs/anvil.err
+
+# Security hardening — solo-host dogfood, but principled
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/srikanth/anvil-dogfood /home/srikanth/.m2 /home/srikanth/.lein /home/srikanth/.cache
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

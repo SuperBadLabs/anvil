@@ -1,0 +1,15 @@
+[Unit]
+Description=anvil redeploy — pull master + rebuild + hot-swap
+Documentation=https://github.com/SuperBadLabs/anvil/blob/master/scripts/redeploy.bb
+After=network-online.target anvil.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=srikanth
+Group=srikanth
+ExecStart=/usr/local/bin/bb /opt/anvil/redeploy.bb
+Nice=10
+TimeoutStartSec=600s
+StandardOutput=journal
+StandardError=journal
