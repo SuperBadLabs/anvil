@@ -62,6 +62,8 @@
 
                  ;; Misc
                  [clj-commons/clj-yaml "1.0.29"]
+                 ;; XML parsing — T1 (surefire/JUnit XML).
+                 [org.clojure/data.xml "0.2.0-alpha9"]
 
                  ;; Groovy — for Jenkinsfile parsing (AST walk) + Pipeline DSL
                  ;; runtime (script {} block execution). Apache 2.0. ~7 MB.

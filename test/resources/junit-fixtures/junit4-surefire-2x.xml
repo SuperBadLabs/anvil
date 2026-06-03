@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.CalcTest" tests="4" failures="1" errors="1" skipped="1" time="0.234">
+  <testcase classname="com.example.CalcTest" name="addsTwoNumbers" time="0.012"/>
+  <testcase classname="com.example.CalcTest" name="dividesByZeroFails" time="0.045">
+    <failure message="expected ArithmeticException but got null" type="java.lang.AssertionError">java.lang.AssertionError: expected ArithmeticException but got null
+	at com.example.CalcTest.dividesByZeroFails(CalcTest.java:42)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)</failure>
+  </testcase>
+  <testcase classname="com.example.CalcTest" name="multipliesNegatives" time="0.011"/>
+  <testcase classname="com.example.CalcTest" name="overflowAtBoundary" time="0.0">
+    <error message="NullPointerException" type="java.lang.NullPointerException">java.lang.NullPointerException
+	at com.example.CalcTest.overflowAtBoundary(CalcTest.java:88)</error>
+  </testcase>
+  <testcase classname="com.example.CalcTest" name="featureUnderConstruction" time="0.0">
+    <skipped/>
+  </testcase>
+</testsuite>
