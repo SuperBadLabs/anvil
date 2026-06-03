@@ -9,7 +9,10 @@
                   engine-level debugging."
   (:require [anvil.web.views.layout :as layout]
             [anvil.web.jenkins-api.jobs :as jobs]
-            [anvil.web.build-summary :as summary]))
+            [anvil.web.build-summary :as summary]
+            [anvil.web.views.test-results :as test-results-view]
+            [anvil.storage.test-results :as tr-store]
+            [anvil.features :as features]))
 
 (defn- result-badge [b]
   (cond
@@ -130,6 +133,19 @@
                   :hx-confirm (str "Retry build #" n " with the same parameters?")
                   :class "btn-retry"}
          "↻ Retry build"]]
+
+       ;; v0.3 T1.4 — Test-results panel. Renders only when the
+       ;; :junit feature flag is enabled AND a summary row was
+       ;; persisted by T1.6's h-junit handler. Otherwise the panel
+       ;; returns nil and the page is unchanged from v0.2.
+       (when (features/enabled? :junit)
+         (let [summary (tr-store/find-summary job-name n)]
+           (when summary
+             (test-results-view/panel
+              {:summary summary
+               :results        (tr-store/find-results job-name n)
+               :failed-results (tr-store/find-failed-results job-name n)
+               :history        (tr-store/recent-summaries job-name 30)}))))
 
        [:h3 "Steps"]
        (if (seq stages)
