@@ -2,7 +2,7 @@
 
 [![version](https://img.shields.io/badge/version-0.3.0-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-442%20%2F%201451%20assertions-brightgreen)](#)
+[![tests](https://github.com/SuperBadLabs/anvil/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/SuperBadLabs/anvil/actions/workflows/test.yml)
 [![junit](https://img.shields.io/badge/junit-dashboard-brightgreen)](docs/junit/)
 [![matchers](https://img.shields.io/badge/problem--matchers-6%20bundled-brightgreen)](docs/problem-matchers/)
 [![pr-checks](https://img.shields.io/badge/PR--checks-GitHub-brightgreen)](docs/pr-checks/)
