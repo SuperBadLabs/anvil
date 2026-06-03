@@ -44,8 +44,11 @@
   (let [p (str workdir "/" name "/" path)]
     (when (fs/exists? p) (slurp p))))
 
-(defn register [{:keys [name]} src]
-  (let [body (json/generate-string {:name name :jenkinsfile_source src})]
+(defn register [{:keys [name repo branch]} src]
+  (let [body (json/generate-string
+              {:name name
+               :jenkinsfile_source src
+               :scm {:type "git" :url repo :branch branch}})]
     (http/post (str anvil "/anvil/admin/jobs")
                {:headers {"content-type" "application/json"}
                 :body body

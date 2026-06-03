@@ -31,6 +31,30 @@
       (is (str/includes? (get body "jenkins_url") "demo"))
       (is (some? (jobs/find-job "demo"))))))
 
+(deftest register-job-with-scm-test
+  (testing "POST /anvil/admin/jobs accepts scm block + threads to the in-memory job"
+    (let [handler (routes/make-handler)
+          resp (handler (mk-req :post "/anvil/admin/jobs"
+                                {"name" "with-scm"
+                                 "jenkinsfile_source" "pipeline { agent any; stages { stage('S') { steps { sh 'true' } } } }"
+                                 "scm" {"type" "git"
+                                        "url" "https://github.com/example/repo.git"
+                                        "branch" "main"}}))]
+      (is (= 201 (:status resp)))
+      (let [j (jobs/find-job "with-scm")]
+        (is (= :git (-> j :scm :type)))
+        (is (= "https://github.com/example/repo.git" (-> j :scm :url)))
+        (is (= "main" (-> j :scm :branch)))))))
+
+(deftest register-job-with-malformed-scm-test
+  (testing "scm without url → 400"
+    (let [resp ((routes/make-handler)
+                (mk-req :post "/anvil/admin/jobs"
+                        {"name" "bad"
+                         "jenkinsfile_source" "pipeline { }"
+                         "scm" {"type" "git" "branch" "main"}}))]
+      (is (= 400 (:status resp))))))
+
 (deftest register-job-validation-test
   (testing "missing name → 400"
     (let [resp ((routes/make-handler)

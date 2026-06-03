@@ -147,5 +147,30 @@ this PR — they're the inventory the matrix surfaced:
 5. **mavenBuild/buildPlugin stubs in declarative `script {}` path** (consistency
    between scripted-eval and runtime.clj binding sets)
 
+## Workspace bug — RESOLVED in this PR
+
+The biggest of the 8 failures (3 directly + contributions to several others) was
+that anvil's `checkout scm` was a no-op stub: jobs registered with a Jenkinsfile
+source had no associated git URL, so the build workspace stayed empty and any
+`./mvnw` or `mvn -f sub/pom.xml` exec'd into nothing.
+
+Fixed by adding **per-job SCM configuration** (`scm: {type, url, branch}`) all
+the way through:
+- migrations 008/009/010 add `scm_type`/`scm_url`/`scm_branch` to `anvil_jobs`
+- `register-job!` accepts `:scm` + persists it
+- `POST /anvil/admin/jobs` accepts `"scm": {...}` from JSON
+- new `anvil.compat.jenkins.scm/provision!` shells out to git on the first build
+  (`git clone --depth 1 --branch X`) and fast-fetches on subsequent builds
+  (`git fetch && git reset --hard origin/X && git clean -fdx`)
+- `runner/run-build!` calls `provision!` after `ensure-workspace!` and before
+  the dispatcher kicks off — drop-in, backwards-compat (jobs without `:scm`
+  skip the clone exactly as before)
+
+The post-fix wild-corpus run confirms it: most failures now sit MUCH later in
+the pipeline. `eclipse-jdt-core` went from instant `POM file does not exist` to
+38 s of real `mvn install` activity that fails on Tycho extension setup —
+which is what Jenkins would also show without an Eclipse-environment-specific
+agent.
+
 Each of these would close at least one matrix entry. Re-run the harness after each
 to track the SUCCESS-rate trajectory.

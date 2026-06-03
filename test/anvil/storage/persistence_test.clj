@@ -42,6 +42,27 @@
       (is (true? (:buildable? j)))
       (is (= :notbuilt (:color j))))))
 
+(deftest job-upsert-with-scm-roundtrip-test
+  (testing "scm config round-trips through SQLite"
+    (persist/upsert-job!
+     {:name "with-scm"
+      :jenkinsfile-source "pipeline { }"
+      :scm {:type :git
+            :url "https://github.com/example/repo.git"
+            :branch "main"}})
+    (let [j (persist/find-job "with-scm")]
+      (is (= "with-scm" (:name j)))
+      (is (= :git (-> j :scm :type)))
+      (is (= "https://github.com/example/repo.git" (-> j :scm :url)))
+      (is (= "main" (-> j :scm :branch))))))
+
+(deftest job-without-scm-has-no-scm-key
+  (testing "jobs registered without :scm have no :scm key in the result map"
+    (persist/upsert-job! {:name "no-scm" :jenkinsfile-source "pipeline { }"})
+    (let [j (persist/find-job "no-scm")]
+      (is (= "no-scm" (:name j)))
+      (is (not (contains? j :scm)) "absence of :scm distinguishes legacy from configured"))))
+
 (deftest list-jobs-empty-then-populated-test
   (testing "list-jobs starts empty; reflects upserts"
     (is (= [] (persist/list-jobs)))

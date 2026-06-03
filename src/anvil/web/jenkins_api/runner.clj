@@ -19,6 +19,7 @@
             [anvil.compat.jenkins.dispatcher :as ad]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.env :as jenkins-env]
+            [anvil.compat.jenkins.scm :as scm]
             [anvil.web.jenkins-api.jobs :as jobs]
             [anvil.web.log-tail :as log-tail]))
 
@@ -119,6 +120,19 @@
                      :job-name job-name
                      :workspace workspace-path
                      :extra-env (or parameters {})})]
+      ;; Wild-corpus follow-up: if the job has :scm configured, fetch
+      ;; the source into the workspace BEFORE any step runs. Without
+      ;; this, Jenkinsfiles whose first sh references workspace files
+      ;; (`./mvnw`, `mvn -f sub/pom.xml`, …) fail with "not found" or
+      ;; "no POM in directory" because anvil's checkout scm is a stub.
+      ;; Idempotent — subsequent builds in the same workspace fast-fetch.
+      ;; No SCM configured → no-op (preserves existing-job behavior).
+      (when-let [scm-cfg (:scm job)]
+        (let [r (scm/provision! workspace scm-cfg)]
+          (log/info (str "anvil.scm: " (:result r)
+                         (when-let [s (:sha r)] (str " @ " (subs s 0 (min 8 (count s)))))
+                         (when-let [e (:error r)] (str " ERROR: " e))))))
+
       ;; v0.3 T7.3 — Pre-step mise/asdf provisioning. Closed by default
       ;; behind :anvil.features/mise; with the flag off, this is a no-op.
       (when (try ((requiring-resolve 'anvil.features/enabled?) :mise)
