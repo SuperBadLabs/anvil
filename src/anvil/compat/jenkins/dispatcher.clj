@@ -270,10 +270,64 @@
   (log-effect d [:echo (str (:message step))])
   (ok ctx))
 
-(defn- h-junit [d step ctx]
-  (log-effect d [:junit {:results (or (:results step) (:arg step))
-                         :args    (:args step)}])
-  (ok ctx))
+(defn- h-junit
+  "v0.3 T1.6 — upgrade `junit` from a recorder-only stub to a real
+   scan+persist+publish handler when the build context supplies a
+   workspace + job/build identity AND the :junit feature flag is on.
+
+   Falls back to the legacy recorder behavior when:
+     - the feature flag is off (T0.2 closed-by-default), or
+     - the context lacks :workspace / :job-name / :build-number
+       (unit tests that don't configure a real workspace).
+   This preserves the dispatcher's testability while making the
+   step do real work in production once the flag flips."
+  [d step ctx]
+  (let [results-glob (or (:results step) (:arg step))
+        ws  (:workspace ctx)
+        jn  (:job-name ctx)
+        bn  (:build-number ctx)
+        feat-on? (try
+                   ((requiring-resolve 'anvil.features/enabled?) :junit)
+                   (catch Throwable _ false))]
+    (if (and feat-on? ws jn bn results-glob)
+      (let [scan (requiring-resolve 'anvil.compat.junit/scan-build-artifacts)
+            record! (requiring-resolve 'anvil.storage.test-results/record-build-results!)
+            publish! (requiring-resolve 'anvil.events.bus/publish!)
+            topic-build (requiring-resolve 'anvil.events.topics/topic-build)
+            evt-test-completed (requiring-resolve 'anvil.events.topics/evt-test-completed)
+            globs (mapv str/trim (str/split (str results-glob) #","))
+            tree (scan ws {:globs globs})
+            summary (record! jn bn tree)]
+        (log-effect d [:junit
+                       (merge (select-keys summary
+                                           [:tests :passed :failed :errored
+                                            :skipped :duration-ms :parse-errors])
+                              {:results results-glob
+                               :scanned-files (:scanned-files tree)})])
+        (try
+          (publish! (topic-build jn bn)
+                    {:type @evt-test-completed
+                     :job-name jn
+                     :build-number bn
+                     :tests (:tests summary)
+                     :passed (:passed summary)
+                     :failed (:failed summary)
+                     :errored (:errored summary)
+                     :skipped (:skipped summary)
+                     :duration-ms (:duration-ms summary)})
+          (catch Throwable t
+            (log/warn t "h-junit: SSE publish failed (non-fatal)")))
+        (ok ctx))
+      (do
+        (log-effect d [:junit {:results results-glob
+                               :args    (:args step)
+                               :note (cond
+                                       (not feat-on?) "recorder-only — :anvil.features/junit disabled"
+                                       (not ws) "recorder-only — no :workspace in ctx"
+                                       (not jn) "recorder-only — no :job-name in ctx"
+                                       (not bn) "recorder-only — no :build-number in ctx"
+                                       :else "recorder-only — no results glob")}])
+        (ok ctx)))))
 
 (defn- h-archive [d step ctx]
   (log-effect d [:archive {:artifacts (or (:artifacts step) (:arg step))
