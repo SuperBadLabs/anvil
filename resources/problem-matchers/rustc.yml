@@ -1,0 +1,26 @@
+owner: rustc
+pattern:
+  # rustc 1.x format:  error[E0308]: mismatched types
+  #   --> src/lib.rs:42:5
+  # We collapse the two-line emit by matching just the --> arrow line; the
+  # error[Exxxx]: message line lives on a prior line and is grabbed by the
+  # message field in callers that buffer two lines. v0.3 ships single-line
+  # match; the message will be the file:line:col itself rather than the
+  # descriptive line. Future multi-line state machine handles both.
+  - regexp: '^\s*-->\s+(.+):(\d+):(\d+)$'
+    file: 1
+    line: 2
+    column: 3
+    severity: 0     # not captured; defaults to :warning
+    message: 0
+  # Common single-line "warning: …" / "error: …" emit (cargo build):
+  #   warning: unused variable: `x`
+  #     --> src/main.rs:5:9
+  # (caught by the above)
+  # And the `path:line:col: severity[code]: msg` shape from rustfmt/clippy:
+  - regexp: '^(.+):(\d+):(\d+):\s+(warning|error|note):\s+(.+)$'
+    file: 1
+    line: 2
+    column: 3
+    severity: 4
+    message: 5

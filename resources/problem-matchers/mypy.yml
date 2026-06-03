@@ -1,0 +1,10 @@
+owner: mypy
+pattern:
+  # mypy:  src/foo.py:42: error: Incompatible return value type  [return-value]
+  #         (column optional, severity always present, [code] optional trailer)
+  - regexp: '^(.+):(\d+):\s*(?:(\d+):)?\s*(error|warning|note):\s+(.+?)(?:\s+\[[a-z\-]+\])?$'
+    file: 1
+    line: 2
+    column: 3
+    severity: 4
+    message: 5

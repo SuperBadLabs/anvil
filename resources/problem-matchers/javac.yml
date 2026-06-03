@@ -1,0 +1,10 @@
+owner: javac
+pattern:
+  # javac emits one line per diagnostic:
+  #   /home/foo/Bar.java:42: error: cannot find symbol
+  - regexp: '^(.+\.java):(\d+):\s+(error|warning|note):\s+(.+)$'
+    file: 1
+    line: 2
+    column: 0
+    severity: 3
+    message: 4
