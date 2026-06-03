@@ -444,7 +444,13 @@
   ;; First chance: TX11D shared-libs registry (infra.* and friends).
   ;; Second chance: a plugin adapter registered for this step name.
   ;; Final fallback: log the call as :unknown so the migration UX can
-  ;; flag it.
+  ;; flag it. If the unknown call carries a `:body` (a translated
+  ;; closure tail — added by translator/translate-call when the last
+  ;; arg is a `:closure`), dispatch the body so nested KNOWN steps
+  ;; still execute. This is what makes a Jenkinsfile like
+  ;; `withChecks(...) { realtimeJUnit(...) { infra.runMaven(opts) } }`
+  ;; reach the `infra.runMaven` shim through TWO shimmed-as-no-op
+  ;; outer wrappers.
   (or
    (when-let [handler (shared-libs/handler-for (:name step))]
      (let [r (handler step ctx)]
@@ -452,7 +458,9 @@
        (h-shared-lib-result d step ctx r)))
    (plugins/dispatch-step step ctx)
    (do (log-effect d [:unknown {:name (:name step) :args (:args step)}])
-       (ok ctx))))
+       (if-let [body (:body step)]
+         (run-body d body ctx)
+         (ok ctx)))))
 
 (defn- h-dir-pseudo
   "Scripted `dir(...) { ... }` execution from inside a script block emits
