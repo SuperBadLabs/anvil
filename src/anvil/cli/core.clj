@@ -10,6 +10,7 @@
   (:require [clojure.string :as str]
             [anvil.cli.import-jenkinsfile :as import-jf]
             [anvil.cli.secrets :as secrets-cli]
+            [anvil.cli.setup-tools :as setup-tools]
             [anvil.version :as v]
             [chengis.config :as config]
             [chengis.product :as product]
@@ -76,6 +77,12 @@
 
         "secrets"
         (secrets-cli/run (vec rest))
+
+        "setup"
+        (let [[subcmd & subrest] rest]
+          (case subcmd
+            "tools" (setup-tools/run (vec subrest))
+            (do (println "ERROR: unknown setup subcommand: " subcmd) 3)))
 
         (do (println (str "ERROR: unknown subcommand: " cmd))
             (print-top-level-usage)

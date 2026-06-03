@@ -12,6 +12,7 @@
    per-job concurrency limit lands when the executor's work-scheduler
    is plumbed in fully."
   (:require [clojure.java.io :as io]
+            [taoensso.timbre :as log]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.matrix-expander :as mx]
@@ -118,6 +119,16 @@
                      :job-name job-name
                      :workspace workspace-path
                      :extra-env (or parameters {})})]
+      ;; v0.3 T7.3 — Pre-step mise/asdf provisioning. Closed by default
+      ;; behind :anvil.features/mise; with the flag off, this is a no-op.
+      (when (try ((requiring-resolve 'anvil.features/enabled?) :mise)
+                 (catch Throwable _ false))
+        (try
+          (let [provision! (requiring-resolve 'anvil.tools.mise/provision!)
+                r (provision! workspace-path)]
+            (log/info (str "anvil.mise: " (:backend r) " → " (:status r))))
+          (catch Throwable t
+            (log/warn t "anvil.mise: provision failed; continuing"))))
       ;; TU2.1: spawn the log-tail thread BEFORE the dispatcher kicks
       ;; off so the first subprocess line is observed live. The thread
       ;; tails `log-file` and publishes per-line :console-line events
