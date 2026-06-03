@@ -871,7 +871,18 @@
                                     :scripted-eval)
                                    (catch Throwable _ false))]
            (cond
-             (and scripted-eval? (seq stage-mces))
+             ;; Tier-3 fires for any scripted Jenkinsfile with executable
+             ;; content (non-blank source) — not just ones with literal
+             ;; `stage('x')` calls. Real-world Jenkinsfiles often delegate
+             ;; everything to a shared library (`buildPlugin(...)`,
+             ;; `mavenBuild(...)`) so there are zero literal stages in
+             ;; the source — but the call IS the pipeline. Routing them
+             ;; to scripted-eval lets methodMissing record the shared-lib
+             ;; call as `:jenkins/shared-lib-unresolved` instead of
+             ;; silently returning a vacuous 0-stage SUCCESS.
+             (and scripted-eval? (some? (some #(re-find #"\S" %)
+                                              (clojure.string/split-lines
+                                               (or source "")))))
              (ir/pipeline (cond-> {:source-path source-path
                                    :stages [{:name "(scripted-eval)"
                                              :steps [{:type :jenkins/scripted-eval
