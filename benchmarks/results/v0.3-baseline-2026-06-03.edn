@@ -1,0 +1,45 @@
+;; v0.3 baseline snapshot — T0.3
+;;
+;; Captured 2026-06-03 against the SuperBadLabs dogfood anvil at
+;; master commit ddf0bbe (T0 in flight; T1-T7 not yet started).
+;;
+;; v0.3 deltas are measured against the numbers in this file. The
+;; T8.2 perf re-check compares against this baseline; any v0.3 page
+;; regressing > 20% p50 fails the exit criteria.
+;;
+;; Composition:
+;;   :ui-ttfb         — bench-ui.bb output (7 pages × 200 iters)
+;;   :sse-soak        — deferred (re-runs at T8.2; existing TU1.7
+;;                      receipt at sse-soak-2026-05-30.edn holds)
+;;   :vs-jenkins      — deferred to T8.2 (requires Jenkins LTS
+;;                      running; not the gating measurement for
+;;                      in-flight feature work)
+
+{:captured-at      #inst "2026-06-03T09:00:00Z"
+ :anvil-version    "0.2.2"
+ :anvil-commit     "ddf0bbe"
+ :anvil-branch     "v0.3/t0-foundation"
+ :runner           "SuperBadLabs dogfood host (gangster desktop)"
+ :runner-jdk       "OpenJDK 21"
+ :measurements
+ {:ui-ttfb         {:source-edn "v0.3-baseline-ui-2026-06-03.edn"
+                    :budget-ms 50.0
+                    :pages-measured 7
+                    :iters-per-page 200
+                    :max-p50-observed-ms 1.879352   ; /jobs
+                    :headroom-at-max     "26.6×"    ; budget / observed
+                    :all-under-budget?   true}
+  :sse-soak        {:status :deferred-to-T8.2
+                    :prior-receipt "sse-soak-2026-05-30.edn"
+                    :prior-result-summary "100 concurrent SSE sessions @ idle, < 5% CPU"
+                    :why-deferred "TU1.7 receipt is 4 days old; codebase has not touched bus/SSE since. Re-run at T8.2 covers the v0.3 widget load."}
+  :vs-jenkins      {:status :deferred-to-T8.2
+                    :prior-receipt "anvil-vs-jenkins-2026-05-30.edn"
+                    :prior-result-summary "95× small-build wall-clock advantage"
+                    :why-deferred "Requires Jenkins LTS running on bench host. Comparison gates v0.3.0 release at T8.2; not the gating measurement for in-flight tranches."}}
+
+ ;; Anti-regression budget. T8.2 enforces these.
+ :exit-budgets
+ {:per-page-p50-regression-pct 20.0     ; AV3 exit criteria
+  :build-wallclock-regression-pct 5.0   ; AV3 exit criteria
+  :ssE-cpu-at-100-sessions-pct  5.0}}   ; TU1.7 holds-over budget

@@ -16,6 +16,7 @@
             [anvil.web.jenkins-api.runner :as runner]
             [anvil.cli.core :as cli]
             [anvil.storage.db :as db]
+            [anvil.features :as features]
             [anvil.version :as v]
             [chengis.product :as product])
   (:import [java.util.concurrent CountDownLatch])
@@ -44,6 +45,9 @@
       (log/info "anvil persistence: " (db/default-db-path))
       (catch Exception e
         (log/warn e "anvil persistence init failed; running atom-only")))
+    ;; T0.2 — Load v0.3 feature flags from anvil.edn. Defaults closed;
+    ;; per-feature flips enable T1–T7 routes/producers as tranches land.
+    (features/load-flags!)
     (queue/start-workers! worker-count runner/run-build!)
     (server/start! {:port port})
     (.addShutdownHook (Runtime/getRuntime)
