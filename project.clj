@@ -86,11 +86,16 @@
   ;; Opt-in browser-test selector (TU0.5). Tag tests with `^:browser`
   ;; and run `lein test :browser`; default `lein test` excludes them so
   ;; no contributor needs Firefox+geckodriver installed just to ship.
-  ;; Default `lein test` excludes both :browser and :tour-capture.
+  ;; Default `lein test` excludes :browser, :tour-capture, and
+  ;; :docker-integration.
   ;; :browser is the etaoin functional smoke; :tour-capture writes
   ;; screenshots + a perf receipt to docs/anvil-ui/tour/, opt-in only.
-  :test-selectors {:default       #(not (or (:browser %) (:tour-capture %)))
+  ;; :docker-integration includes tests that require a working Docker
+  ;; daemon/socket; run them explicitly via
+  ;; `lein test :docker-integration`.
+  :test-selectors {:default       #(not (or (:browser %) (:tour-capture %) (:docker-integration %)))
                    :browser       :browser
+                   :docker-integration :docker-integration
                    :tour-capture  :tour-capture
                    :all           (constantly true)}
 
