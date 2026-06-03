@@ -123,6 +123,14 @@
         [:a.btn-trigger {:href (str "/jobs/" job-name "/build-form")
                          :style "text-decoration:none;"}
          "▶ Build with parameters"]]
+       ;; v0.3 T5.5 — Next scheduled run pill (when flag on + cron registered).
+       (when (try ((requiring-resolve 'anvil.features/enabled?) :scheduler)
+                  (catch Throwable _ false))
+         (when-let [next-fire (try ((requiring-resolve 'anvil.scheduler.engine/next-fire-for) job-name)
+                                   (catch Throwable _ nil))]
+           [:p.next-run-pill
+            [:strong "Next scheduled run: "]
+            (str next-fire)]))
        [:h3 "Jenkinsfile"]
        [:pre.console (or (:jenkinsfile-source job) "")]
        [:h3 "Build history"]

@@ -50,9 +50,28 @@
     (features/load-flags!)
     ;; T3.4 — GitHub Checks subscriber listens to :build-started /
     ;; :build-done on the bus and PATCHes the github check-run state.
-    ;; Idempotent — internally rotates if called twice (test paths).
     (when (features/enabled? :pr-checks)
       ((requiring-resolve 'anvil.integration.github-subscriber/start!)))
+    ;; T5.2 — Cron scheduler. Jobs registered from
+    ;; :anvil.scheduler/jobs in anvil.edn at startup; trigger-fn
+    ;; routes to record-build-start! so a cron fire kicks off a real
+    ;; anvil build.
+    (when (features/enabled? :scheduler)
+      (let [start! (requiring-resolve 'anvil.scheduler.engine/start!)
+            reg!   (requiring-resolve 'anvil.scheduler.engine/register-job!)
+            cfg    ((requiring-resolve 'anvil.config/load-edn) "anvil" {})
+            jobs   (get cfg :anvil.scheduler/jobs)
+            trigger-fn (fn [job-name params]
+                         (try
+                           ((requiring-resolve 'anvil.web.jenkins-api.jobs/record-build-start!)
+                            job-name {:parameters params})
+                           (catch Throwable t
+                             (log/warn t (str "anvil.scheduler: trigger of " job-name " failed")))))]
+        (start!)
+        (doseq [[job-name expr] jobs]
+          (try (reg! job-name expr trigger-fn)
+               (catch Throwable t
+                 (log/warn t (str "anvil.scheduler: register " job-name " failed")))))))
     (queue/start-workers! worker-count runner/run-build!)
     (server/start! {:port port})
     (.addShutdownHook (Runtime/getRuntime)
