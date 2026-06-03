@@ -48,6 +48,11 @@
     ;; T0.2 — Load v0.3 feature flags from anvil.edn. Defaults closed;
     ;; per-feature flips enable T1–T7 routes/producers as tranches land.
     (features/load-flags!)
+    ;; T3.4 — GitHub Checks subscriber listens to :build-started /
+    ;; :build-done on the bus and PATCHes the github check-run state.
+    ;; Idempotent — internally rotates if called twice (test paths).
+    (when (features/enabled? :pr-checks)
+      ((requiring-resolve 'anvil.integration.github-subscriber/start!)))
     (queue/start-workers! worker-count runner/run-build!)
     (server/start! {:port port})
     (.addShutdownHook (Runtime/getRuntime)
