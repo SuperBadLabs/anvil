@@ -1,4 +1,4 @@
-(defproject superbadlabs/anvil "0.2.1"
+(defproject superbadlabs/anvil "0.3.0"
   :description
   "anvil — a free, OSS, single-team CI server that runs your Jenkinsfile.
 
