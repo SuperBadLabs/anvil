@@ -49,16 +49,50 @@
 (def ^:private absent-file-poll-ms 100)
 (def ^:private drain-grace-ms 200)
 
+(defn- emit-problem-if-match!
+  "v0.3 T2.2 — when the :problem-matchers feature is enabled, run
+   the line through anvil.compat.problem-matchers/match-line. On a
+   hit, publish :problem-found on the build's topic AND persist via
+   anvil.storage.problems. Catches everything — a matcher bug must
+   not kill the tail thread."
+  [topic ^long seq-no ^String line]
+  (try
+    (let [feat-on? ((requiring-resolve 'anvil.features/enabled?) :problem-matchers)]
+      (when feat-on?
+        (let [match-line-fn (requiring-resolve 'anvil.compat.problem-matchers/match-line)
+              p (match-line-fn line)]
+          (when p
+            (bus/publish! topic
+                          {:type :problem-found
+                           :seq seq-no
+                           :problem p})
+            ;; Topic shape: [:build <job> <n>]. Persist only when it
+            ;; matches that shape so dispatcher unit tests (which
+            ;; publish to ad-hoc topics) don't try to write to a
+            ;; non-existent build row.
+            (when (and (vector? topic) (= :build (first topic)))
+              (let [job-name (nth topic 1 nil)
+                    build-number (nth topic 2 nil)
+                    record! (requiring-resolve 'anvil.storage.problems/record-problem!)]
+                (when (and job-name build-number)
+                  (record! job-name build-number seq-no p))))))))
+    (catch Throwable t
+      (log/warn t "anvil.web.log-tail/emit-problem-if-match! threw — line skipped"))))
+
 (defn- emit-line!
   "Publish one line as a bus event on the build's topic. `seq-no` is
    monotonically increasing per tail thread — useful for clients that
-   reconnect mid-build and want to dedup."
+   reconnect mid-build and want to dedup.
+
+   T2.2 — after the console-line publish, runs the line through the
+   problem-matcher framework (gated on the :problem-matchers flag)."
   [topic ^long seq-no stream line]
   (bus/publish! topic
                 {:type :console-line
                  :seq seq-no
                  :stream stream
-                 :line line}))
+                 :line line})
+  (emit-problem-if-match! topic seq-no line))
 
 (defn- split-and-emit!
   "Drain complete lines (delimited by `\\n`, with optional `\\r`

@@ -11,7 +11,9 @@
             [anvil.web.jenkins-api.jobs :as jobs]
             [anvil.web.build-summary :as summary]
             [anvil.web.views.test-results :as test-results-view]
+            [anvil.web.views.problems :as problems-view]
             [anvil.storage.test-results :as tr-store]
+            [anvil.storage.problems :as problems-store]
             [anvil.features :as features]))
 
 (defn- result-badge [b]
@@ -146,6 +148,15 @@
                :results        (tr-store/find-results job-name n)
                :failed-results (tr-store/find-failed-results job-name n)
                :history        (tr-store/recent-summaries job-name 30)}))))
+
+       ;; v0.3 T2.4 — Problems panel. Same posture: only when
+       ;; :problem-matchers flag is on AND the log-tail extension
+       ;; persisted at least one matched diagnostic.
+       (when (features/enabled? :problem-matchers)
+         (let [problems (problems-store/find-problems job-name n)]
+           (problems-view/panel
+            {:summary (problems-store/find-summary job-name n)
+             :problems problems})))
 
        [:h3 "Steps"]
        (if (seq stages)

@@ -1,0 +1,10 @@
+owner: msbuild
+pattern:
+  # MSBuild standard diagnostic format:
+  #   Foo.cs(42,7,42,15): error CS1002: ; expected [/path/to/Foo.csproj]
+  - regexp: '^(.+)\((\d+),(\d+)(?:,\d+,\d+)?\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.+?)(?:\s+\[.+\])?$'
+    file: 1
+    line: 2
+    column: 3
+    severity: 4
+    message: 6

@@ -1,0 +1,23 @@
+owner: eslint
+pattern:
+  # eslint compact format:
+  #   /home/foo/src/index.js: line 42, col 5, Error - 'x' is not defined. (no-undef)
+  - regexp: '^(.+):\s+line\s+(\d+),\s+col\s+(\d+),\s+(Error|Warning)\s+-\s+(.+)$'
+    file: 1
+    line: 2
+    column: 3
+    severity: 4
+    message: 5
+  # eslint stylish format (default):
+  #   /path/to/file.js
+  #     42:5  error  'x' is not defined  no-undef
+  # — file lives on a prior line, so the bare indented row matches without
+  # a file. Callers can join sequential matches to a previous "file-only"
+  # line via state; v0.3 ships the simpler 1-line match below for files
+  # that emit the compact form via `eslint -f compact`.
+  - regexp: '^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}([a-z\-]+(?:/[a-z\-]+)?)$'
+    file: 0
+    line: 1
+    column: 2
+    severity: 3
+    message: 4
