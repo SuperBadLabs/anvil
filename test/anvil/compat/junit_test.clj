@@ -198,3 +198,86 @@
         (is (= 11 (get-in all [:totals :tests]))
             "surefire 6 + junit4 5 = 11 from the two clean files"))
       (finally (.delete tmp)))))
+
+;; ---------------------------------------------------------------------------
+;; Workspace scan (T1.2)
+;; ---------------------------------------------------------------------------
+
+(defn- mk-workspace
+  "Create a tmp dir with a Maven-style surefire layout populated by
+   copying the named golden fixtures into target/surefire-reports/.
+   Returns the workspace root File."
+  [fixture-names]
+  (let [ws (.toFile (java.nio.file.Files/createTempDirectory
+                      "anvil-junit-ws-" (into-array java.nio.file.attribute.FileAttribute [])))
+        reports (io/file ws "target/surefire-reports")]
+    (.mkdirs reports)
+    (doseq [fx fixture-names]
+      (io/copy (io/file (fixture-path fx))
+               (io/file reports (str "TEST-" fx))))
+    ws))
+
+(defn- rm-rf [^java.io.File f]
+  (when (.isDirectory f)
+    (doseq [c (.listFiles f)] (rm-rf c)))
+  (.delete f))
+
+(deftest scan-finds-maven-default-layout
+  (let [ws (mk-workspace ["junit4-surefire-2x.xml" "surefire-3x.xml"])]
+    (try
+      (let [result (junit/scan-build-artifacts ws)]
+        (is (= 2 (:scanned-files result)))
+        (is (= 11 (get-in result [:totals :tests]))
+            "junit4 5 + surefire 6 = 11"))
+      (finally (rm-rf ws)))))
+
+(deftest scan-finds-gradle-layouts
+  (let [ws (.toFile (java.nio.file.Files/createTempDirectory
+                      "anvil-junit-ws-" (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      ;; Gradle pre-7 layout
+      (let [g (io/file ws "target/test-results/test")]
+        (.mkdirs g)
+        (io/copy (io/file (fixture-path "junit5-testsuites-wrap.xml"))
+                 (io/file g "TEST-com.example.Foo.xml")))
+      ;; Gradle 7+ layout
+      (let [g7 (io/file ws "build/test-results/test")]
+        (.mkdirs g7)
+        (io/copy (io/file (fixture-path "testng.xml"))
+                 (io/file g7 "TEST-com.example.it.LoginIT.xml")))
+      (let [result (junit/scan-build-artifacts ws)]
+        (is (= 2 (:scanned-files result)))
+        (is (= 8 (get-in result [:totals :tests]))
+            "junit5 5 + testng 3 = 8"))
+      (finally (rm-rf ws)))))
+
+(deftest scan-respects-custom-glob
+  (let [ws (.toFile (java.nio.file.Files/createTempDirectory
+                      "anvil-junit-ws-" (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      (let [out (io/file ws "out/junit")]
+        (.mkdirs out)
+        (io/copy (io/file (fixture-path "surefire-3x.xml"))
+                 (io/file out "results.xml")))
+      ;; Default globs don't match out/junit/*.xml, so a default scan returns empty
+      (is (= 0 (:scanned-files (junit/scan-build-artifacts ws))))
+      ;; A caller-supplied glob picks it up
+      (let [result (junit/scan-build-artifacts ws {:globs ["out/junit/*.xml"]})]
+        (is (= 1 (:scanned-files result)))
+        (is (= 6 (get-in result [:totals :tests]))))
+      (finally (rm-rf ws)))))
+
+(deftest scan-empty-workspace-returns-zero-totals
+  (let [ws (.toFile (java.nio.file.Files/createTempDirectory
+                      "anvil-junit-ws-" (into-array java.nio.file.attribute.FileAttribute [])))]
+    (try
+      (let [result (junit/scan-build-artifacts ws)]
+        (is (= 0 (:scanned-files result)))
+        (is (= 0 (get-in result [:totals :tests])))
+        (is (empty? (:parse-errors result))))
+      (finally (rm-rf ws)))))
+
+(deftest scan-handles-missing-workspace-dir-gracefully
+  (let [result (junit/scan-build-artifacts "/no/such/directory/anvil-test")]
+    (is (= 0 (:scanned-files result)))
+    (is (= 0 (get-in result [:totals :tests])))))

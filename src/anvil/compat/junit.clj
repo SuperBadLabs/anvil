@@ -81,7 +81,10 @@
   (:require [clojure.data.xml :as xml]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log])
+  (:import [java.io File]
+           [java.nio.file Files FileSystems Path Paths LinkOption]
+           [java.nio.file.attribute BasicFileAttributes]))
 
 ;; ---------------------------------------------------------------------------
 ;; Internal helpers
@@ -285,3 +288,89 @@
     {:suites all-suites
      :totals totals
      :parse-errors parse-errors}))
+
+;; ---------------------------------------------------------------------------
+;; Workspace scan — T1.2
+;; ---------------------------------------------------------------------------
+
+(def default-globs
+  "Surefire XML locations we look in when no caller-supplied glob is
+   provided. Covers Maven, Gradle (both layouts), and the most common
+   single-file emitters from npm/pytest/cargo."
+  ["target/surefire-reports/*.xml"        ; Maven, the original
+   "target/test-results/test/*.xml"       ; Gradle pre-7
+   "build/test-results/test/*.xml"        ; Gradle 7+
+   "build/test-results/**/*.xml"          ; Gradle multi-module
+   "reports/junit.xml"                    ; pytest --junitxml=reports/junit.xml
+   "junit.xml"                            ; cargo nextest, npm mocha-junit
+   "test-results.xml"])                   ; misc shop convention
+
+(defn- glob->matcher
+  "Compile a single glob pattern into a java.nio.file.PathMatcher."
+  [glob]
+  (.getPathMatcher (FileSystems/getDefault) (str "glob:" glob)))
+
+(defn- walk-files
+  "Vector of every regular file under `root`. We materialize so the
+   underlying NIO Stream closes promptly — surefire trees in practice
+   are < ~10k files even for a multi-module monorepo."
+  [^Path root]
+  (when (Files/exists root (into-array LinkOption []))
+    (let [stream (Files/walk root (into-array java.nio.file.FileVisitOption []))]
+      (try
+        (vec (filter #(Files/isRegularFile % (into-array LinkOption []))
+                     (iterator-seq (.iterator stream))))
+        (finally (.close stream))))))
+
+(defn find-surefire-xml
+  "Walk `workspace-dir` and return absolute paths matching any of
+   `globs` (defaults to `default-globs`). Sorted by path for
+   deterministic test order."
+  ([workspace-dir]
+   (find-surefire-xml workspace-dir default-globs))
+  ([workspace-dir globs]
+   (let [root (.toAbsolutePath (Paths/get (str workspace-dir)
+                                          (into-array String [])))
+         matchers (mapv glob->matcher globs)
+         files (walk-files root)]
+     (->> files
+          (filter (fn [^Path p]
+                    (let [rel (.relativize root p)]
+                      (some #(.matches ^java.nio.file.PathMatcher % rel)
+                            matchers))))
+          (map #(.toFile ^Path %))
+          (sort-by #(.getPath ^java.io.File %))
+          vec))))
+
+(defn scan-build-artifacts
+  "T1.2 — after a build completes, glob its workspace for surefire
+   XML, parse every match, and return the aggregated tree.
+
+   `opts` may include:
+     :globs — vector of glob patterns to search; defaults to
+              `default-globs`. Caller can pass a single project's
+              custom layout (e.g. ['out/junit/*.xml']).
+
+   Returns the same shape as `parse-surefire-tree`:
+     {:suites [...] :totals {...} :parse-errors [...]
+      :scanned-files <n> :scanned-from <abs-path>}.
+
+   This function does NOT persist. The dispatcher hook from T1.6 is
+   responsible for calling `anvil.storage.test-results/record-build-
+   results!` + publishing the `:test-completed` bus event."
+  ([workspace-dir]
+   (scan-build-artifacts workspace-dir {}))
+  ([workspace-dir {:keys [globs] :or {globs default-globs}}]
+   (let [files (find-surefire-xml workspace-dir globs)
+         tree (parse-surefire-tree files)]
+     (log/info (format "anvil.compat.junit: scanned %s — %d files, %d cases (passed=%d failed=%d errored=%d skipped=%d)"
+                       (str workspace-dir)
+                       (count files)
+                       (get-in tree [:totals :tests])
+                       (get-in tree [:totals :passed])
+                       (get-in tree [:totals :failed])
+                       (get-in tree [:totals :errored])
+                       (get-in tree [:totals :skipped])))
+     (assoc tree
+            :scanned-files (count files)
+            :scanned-from (str workspace-dir)))))
