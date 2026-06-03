@@ -861,35 +861,45 @@
          ;; it has no stages".
          (let [stage-mces (collect-stage-mces top-statements)
                libs       (detect-libraries source)
-               ;; For each scripted stage, pair its own cdata-closures
-               ;; (in source order from the :cdata view) with its own
-               ;; ClosureExpression nodes (also in source order from
-               ;; the AST). Both walks are scoped to the single stage
-               ;; MCE — earlier iterations zipped each stage's cdata
-               ;; against the WHOLE file's exprs starting at index 0,
-               ;; so stage N's first cdata-closure got paired with
-               ;; stage 0's first ClosureExpression — silently
-               ;; corrupting `script { … }` body source extraction in
-               ;; second-and-later stages (Codex P2, PR #164).
-               closure-objs
-               (into {}
-                     (mapcat (fn [^MethodCallExpression smc]
-                               (let [cdata (g/->cdata smc)
-                                     cdata-closures (collect-cdata-closures cdata)
-                                     stage-exprs (g/collect-closure-expressions [smc])]
-                                 (map vector cdata-closures stage-exprs)))
-                             stage-mces))
-               stages     (mapv #(translate-scripted-stage
+               ;; Tier-3 path: when :anvil.features/scripted-eval is on,
+               ;; bypass the static-IR translation and emit a single
+               ;; scripted-eval step carrying the whole source. The
+               ;; dispatcher runs it through Groovy + anvil's expanded
+               ;; Pipeline DSL bindings so GStrings, combinations,
+               ;; destructuring, etc. all work natively.
+               scripted-eval? (try ((requiring-resolve 'anvil.features/enabled?)
+                                    :scripted-eval)
+                                   (catch Throwable _ false))]
+           (cond
+             (and scripted-eval? (seq stage-mces))
+             (ir/pipeline (cond-> {:source-path source-path
+                                   :stages [{:name "(scripted-eval)"
+                                             :steps [{:type :jenkins/scripted-eval
+                                                      :source source}]}]
+                                   :options [{:scripted-pipeline? true
+                                              :scripted-eval? true}]}
+                            (seq libs) (assoc :libraries libs)))
+
+             :else
+             (let [closure-objs
+                   (into {}
+                         (mapcat (fn [^MethodCallExpression smc]
+                                   (let [cdata (g/->cdata smc)
+                                         cdata-closures (collect-cdata-closures cdata)
+                                         stage-exprs (g/collect-closure-expressions [smc])]
+                                     (map vector cdata-closures stage-exprs)))
+                                 stage-mces))
+                   stages (mapv #(translate-scripted-stage
                                   % source closure-objs)
                                 stage-mces)]
-           (if (seq stages)
-             (ir/pipeline (cond-> {:source-path source-path
-                                   :stages stages
-                                   :options [{:scripted-pipeline? true}]}
-                            (seq libs) (assoc :libraries libs)))
-             (ir/pipeline {:source-path source-path
-                           :stages []
-                           :options [{:parse-error :no-pipeline-block}]})))
+               (if (seq stages)
+                 (ir/pipeline (cond-> {:source-path source-path
+                                       :stages stages
+                                       :options [{:scripted-pipeline? true}]}
+                                (seq libs) (assoc :libraries libs)))
+                 (ir/pipeline {:source-path source-path
+                               :stages []
+                               :options [{:parse-error :no-pipeline-block}]})))))
 
          (let [pipeline-cdata (g/->cdata pipeline-mc)
                pipeline-body (-> pipeline-cdata :args first :body)

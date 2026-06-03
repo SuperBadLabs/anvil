@@ -48,8 +48,15 @@
 (def known-features
   "The feature keys recognized by anvil v0.3. Add an entry when a new
    tranche reserves its flag; remove when a feature is graduated to
-   always-on (typically in the v0.3.x cycle following its ship)."
-  #{:junit :problem-matchers :pr-checks :matrix :scheduler :secrets :mise})
+   always-on (typically in the v0.3.x cycle following its ship).
+
+   :scripted-eval — post-v0.3.0 Tier-3 worthiness work. Routes the
+   WHOLE scripted Jenkinsfile through Groovy + anvil's expanded
+   Pipeline DSL bindings so GStrings, combinations, destructured
+   bindings, etc. work natively. Closed-by-default; existing
+   scripted-Pipeline static-IR path remains the v0.3 behavior."
+  #{:junit :problem-matchers :pr-checks :matrix :scheduler :secrets :mise
+    :scripted-eval})
 
 (def ^:private flag-ns "anvil.features")
 
