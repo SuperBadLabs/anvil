@@ -1,0 +1,92 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+env:
+  LEIN_JVM_OPTS: '--enable-native-access=ALL-UNNAMED'
+
+jobs:
+  # Fast default suite — pure Clojure, no browser needed
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Clojure + Leiningen
+        uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          lein: latest
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
+          restore-keys: ${{ runner.os }}-m2-anvil-
+
+      - name: Install chengis-core 0.1.0 from git tag (per RS2)
+        run: |
+          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
+            git clone --depth 1 --branch v0.1.0 \
+              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+            (cd /tmp/chengis-core && lein install)
+          else
+            echo "chengis-core 0.1.0 already in cache, skipping install"
+          fi
+
+      - name: lein test (default selector)
+        run: lein test
+
+  # Browser/etaoin smoke — opt-in tagged tests, needs Firefox
+  test-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Clojure + Leiningen
+        uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          lein: latest
+
+      - name: Set up Firefox
+        uses: browser-actions/setup-firefox@v1
+
+      - name: Set up geckodriver
+        uses: browser-actions/setup-geckodriver@latest
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
+          restore-keys: ${{ runner.os }}-m2-anvil-
+
+      - name: Install chengis-core 0.1.0
+        run: |
+          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
+            git clone --depth 1 --branch v0.1.0 \
+              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+            (cd /tmp/chengis-core && lein install)
+          fi
+
+      - name: lein test :browser
+        run: lein test :browser

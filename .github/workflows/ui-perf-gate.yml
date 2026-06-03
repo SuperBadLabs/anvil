@@ -1,0 +1,111 @@
+name: ui perf gate
+
+# Ported from the monorepo (TU6.4) for the standalone anvil repo.
+# Removed `anvil/` path prefixes; added chengis-core install prelude.
+
+on:
+  pull_request:
+    paths:
+      - 'src/anvil/web/**'
+      - 'resources/public/**'
+      - 'benchmarks/scripts/bench-ui.bb'
+      - 'benchmarks/scripts/ui-perf-gate.bb'
+      - 'benchmarks/results/ui-baseline-*.edn'
+      - '.github/workflows/ui-perf-gate.yml'
+  workflow_dispatch:
+    inputs:
+      warn-only:
+        description: 'Soft mode (never exit 1)'
+        required: false
+        default: 'true'
+
+jobs:
+  ui-perf-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Same posture as the monorepo's perf-regression: PR-time signal,
+    # soft by default because shared-runner perf is noisier than
+    # dev-machine baselines.
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Clojure + Leiningen + Babashka
+        uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          lein: latest
+          bb: latest
+
+      - name: Cache Maven + lein deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.lein
+          key: ${{ runner.os }}-uiperf-${{ hashFiles('project.clj') }}
+          restore-keys: |
+            ${{ runner.os }}-uiperf-
+
+      - name: Install chengis-core 0.1.0
+        run: |
+          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
+            git clone --depth 1 --branch v0.1.0 \
+              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+            (cd /tmp/chengis-core && lein install)
+          fi
+
+      - name: Start anvil
+        run: |
+          nohup lein run --port 8765 > /tmp/anvil.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8765/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:8765/ > /dev/null || (cat /tmp/anvil.log && exit 1)
+
+      - name: Run UI perf gate (soft)
+        env:
+          WARN_ONLY: ${{ github.event.inputs.warn-only || 'true' }}
+        run: |
+          ARGS="--threshold-pct 30 --budget-ms 50 --iters 100"
+          if [ "$WARN_ONLY" = "true" ]; then
+            ARGS="$ARGS --warn-only"
+          fi
+          ./benchmarks/scripts/ui-perf-gate.bb $ARGS | tee ui-perf-report.txt
+
+      - name: Upload UI perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-perf-report-${{ github.run_id }}
+          path: ui-perf-report.txt
+          if-no-files-found: warn
+
+      - name: Comment PR with UI perf delta
+        if: ${{ github.event_name == 'pull_request' && always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report;
+            try { report = fs.readFileSync('ui-perf-report.txt', 'utf8'); }
+            catch (_) { return; }
+            const body = "**UI perf gate** (TU6.4) — anvil page TTFB vs baseline\n\n" +
+                         "```\n" + report.slice(-3000) + "\n```";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
