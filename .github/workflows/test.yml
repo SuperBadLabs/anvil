@@ -72,11 +72,6 @@ jobs:
 
       - name: Set up geckodriver
         uses: browser-actions/setup-geckodriver@latest
-        with:
-          # Authenticated requests use the per-repo 1000/hr quota
-          # instead of the anon 60/hr (which intermittently 403'd
-          # on the v0.3 PR train).
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4

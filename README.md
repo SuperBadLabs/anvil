@@ -1,16 +1,5 @@
 # anvil
 
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](CHANGELOG.md)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-442%20%2F%201451%20assertions-brightgreen)](#)
-[![junit](https://img.shields.io/badge/junit-dashboard-brightgreen)](docs/junit/)
-[![matchers](https://img.shields.io/badge/problem--matchers-6%20bundled-brightgreen)](docs/problem-matchers/)
-[![pr-checks](https://img.shields.io/badge/PR--checks-GitHub-brightgreen)](docs/pr-checks/)
-[![matrix](https://img.shields.io/badge/matrix-declarative-brightgreen)](docs/matrix/)
-[![scheduler](https://img.shields.io/badge/scheduler-cron%20%2B%20H--spread-brightgreen)](docs/scheduler/)
-[![secrets](https://img.shields.io/badge/secrets-AES--256--GCM-brightgreen)](docs/secrets/)
-[![mise](https://img.shields.io/badge/mise%2Fasdf-auto-brightgreen)](docs/tools/)
-
 A free, open-source CI server that runs your existing Jenkinsfile —
 unchanged — on a modern engine.
 
