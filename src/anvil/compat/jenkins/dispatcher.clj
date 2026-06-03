@@ -861,6 +861,26 @@
          :message (.getMessage e)
          :ctx @ctx-atom}))))
 
+(defn- h-scripted-eval
+  "Tier-3 — run the WHOLE scripted Jenkinsfile through Groovy + anvil's
+   expanded Pipeline DSL bindings. The full source is in (:source step).
+
+   This is the path that handles `axes.values().combinations { def
+   (platform,jdk) = it; sh \"build-${platform}-jdk${jdk}\" }` correctly:
+   Groovy itself does the iteration + GString interpolation, and
+   anvil's __sh closure routes the resolved command through h-sh."
+  [this step ctx]
+  (let [ctx-atom (atom ctx)
+        run-scripted (requiring-resolve 'anvil.compat.jenkins.scripted-runtime/run-scripted-file)]
+    (try
+      (run-scripted (:source step) this ctx-atom)
+      (ok @ctx-atom :output "[scripted-eval]")
+      (catch Exception e
+        (log-effect this [:scripted-eval-failed (.getMessage e)])
+        {:status :failed :error :scripted-eval-failed
+         :message (.getMessage e)
+         :ctx @ctx-atom}))))
+
 ;; ---------------------------------------------------------------------------
 ;; Dispatch table + record
 ;; ---------------------------------------------------------------------------
@@ -889,7 +909,7 @@
           :jenkins/with-env :jenkins/with-credentials :jenkins/timeout
           :jenkins/retry :jenkins/parallel
           :jenkins/properties :jenkins/with-checks :jenkins/with-maven
-          :jenkins/script :jenkins/unknown
+          :jenkins/script :jenkins/scripted-eval :jenkins/unknown
           :jenkins/agent-stage-enter :jenkins/agent-stage-leave}
         plugin-step-types))
 
@@ -992,6 +1012,7 @@
         :jenkins/with-checks       (h-with-checks this step ctx)
         :jenkins/with-maven        (h-with-maven this step ctx)
         :jenkins/script            (h-script this step ctx)
+        :jenkins/scripted-eval     (h-scripted-eval this step ctx)
         :jenkins/unknown           (h-unknown this step ctx)
         :jenkins/agent-stage-enter (h-agent-stage-enter this step ctx)
         :jenkins/agent-stage-leave (h-agent-stage-leave this step ctx)))))

@@ -22,7 +22,7 @@
   (testing "v0.3 board T1–T7 each have a reserved flag"
     (is (= #{:junit :problem-matchers :pr-checks
              :matrix :scheduler :secrets :mise}
-           features/known-features))))
+           (disj features/known-features :scripted-eval)))))
 
 (deftest enabled?-defaults-to-false
   (testing "every known feature is closed-by-default"
