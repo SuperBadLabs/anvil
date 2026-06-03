@@ -18,6 +18,7 @@
             [anvil.web.views.compare-page :as compare-page]
             [anvil.web.views.artifacts-page :as artifacts-page]
             [anvil.web.views.build-form :as build-form]
+            [anvil.web.views.job-create-page :as job-create]
             [anvil.web.console-dl :as console-dl]
             [anvil.web.build-actions :as build-actions]
             [ring.middleware.cookies :as ring-cookies]
@@ -114,6 +115,15 @@
    ["/"                {:get handler-dashboard      :name ::root}]
    ["/status"          {:get handler-dashboard      :name ::status-html}]   ; legacy alias
    ["/jobs"            {:get handler-jobs-list      :name ::jobs}]
+   ;; v0.2.2 (dogfood-driven patch): UI form for creating a job from
+   ;; scratch. v0.2's empty-state CTA pointed at the `anvil import` CLI
+   ;; or the JSON admin API, leaving the green-field case ("I want to
+   ;; write a Jenkinsfile in the UI right now") without a path.
+   ;; Literal /jobs/new is matched ahead of /jobs/:name by reitit.
+   ["/jobs/new"
+    {:get  (fn [req] (html (str (job-create/get-form req))))
+     :post job-create/submit
+     :name ::job-create}]
    ["/jobs/:name"      {:get handler-job-detail     :name ::job-detail}]
    ;; TU4.1+4.2+4.3+4.4+4.5: trigger UX. get-form returns a Hiccup
    ;; HTML string (no headers); submit returns a Ring map already.

@@ -30,9 +30,12 @@
                         "     -H 'Content-Type: application/json' \\\n"
                         "     -d '{\"name\": \"my-job\", \"jenkinsfile_source\": \"pipeline { agent any; stages { stage(\\\"s\\\") { steps { sh \\\"echo hi\\\" } } } }\"}'")]]
     [:li
-     "Or use the existing "
+     "Or " [:a {:href "/jobs/new"} [:strong "create a new job in the UI"]] " — "
+     "type a name + Jenkinsfile inline."]
+    [:li
+     "Power-user paths: the "
      [:a {:href "/jenkins/api/json"} [:code "/jenkins/*"]]
-     " REST shim from "
+     " REST shim works from "
      [:code "jenkins-cli"] " or any GitHub plugin (read-mostly + build trigger)."]]
    [:p.muted
     "Once jobs exist: the dashboard ticks live, builds stream "
