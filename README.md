@@ -14,10 +14,10 @@
 A free, open-source CI server that runs your existing Jenkinsfile —
 unchanged — on a modern engine.
 
-> **Receipt:** anvil ran `jenkinsci/jenkins:master/Jenkinsfile`
-> verbatim and built `cli-2.567-SNAPSHOT.jar` (12 MB) from Jenkins's
-> actual source tree in 5.8 seconds. See
-> [`../docs/jenkins-self-host/RECEIPT.md`](../docs/jenkins-self-host/RECEIPT.md).
+> **Receipt:** anvil **v0.3.0** built `cli-2.568-SNAPSHOT.jar` (12 MB)
+> from `jenkinsci/jenkins:master` source in 32 seconds on the
+> SuperBadLabs dogfood host. See
+> [`docs/jenkins-self-host/RECEIPT.md`](docs/jenkins-self-host/RECEIPT.md).
 
 > Jenkins® is a registered trademark of LF Charities Inc.  anvil is not
 > affiliated with or endorsed by the Jenkins project.
