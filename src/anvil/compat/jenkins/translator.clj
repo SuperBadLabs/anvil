@@ -571,13 +571,29 @@
    "reportPortal"           (leaf-plugin-step :jenkins/report-portal)})
 
 (defn- translate-call
-  "Dispatch a single call to its translator; fall through to :jenkins/unknown."
+  "Dispatch a single call to its translator; fall through to :jenkins/unknown.
+
+   If the unknown call's last arg is a `:closure` (i.e. it looks like a
+   block step — `realtimeJUnit(...) { ... }`, `withChecks(...) { ... }`,
+   etc.), translate the closure body too and attach as `:body` on the
+   unknown IR. The dispatcher's h-unknown will run the body even though
+   the outer call is shimmed as a no-op — so nested KNOWN steps inside
+   unknown block steps still execute. This is what makes the unmodified
+   ci.jenkins.io Jenkinsfile reach its `infra.runMaven` call buried
+   inside `withChecks { realtimeJUnit { … } }`."
   [call source closure-objs]
   (let [n (:name call)
-        tr (get step-translators n)]
+        tr (get step-translators n)
+        last-arg (last (:args call))
+        closure-arg (when (and (map? last-arg) (= :closure (:type last-arg)))
+                      last-arg)
+        body (when closure-arg
+               (->> (body-calls closure-arg)
+                    (mapv #(translate-call % source closure-objs))))]
     (if tr
       (tr call source closure-objs)
-      (ir/step-unknown n (args->plain (:args call))))))
+      (cond-> (ir/step-unknown n (args->plain (:args call)))
+        (seq body) (assoc :body body)))))
 
 (defn- translate-steps-body
   [steps-closure source closure-objs]
