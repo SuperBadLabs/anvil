@@ -1,0 +1,96 @@
+pipeline {
+
+	agent none
+
+	stages {
+		stage('Linux Build & Test') {
+
+		    environment {
+                JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
+            }
+			
+			agent {
+				label 'p4java'
+			}
+			
+			stages {
+				stage('Compile') {
+					steps {
+						sh 'mvn compiler:compile spotbugs:check'
+					}
+				}
+
+				stage('Build and Test') {
+					steps {
+						sh 'mvn clean package -P enable-jacoco'
+					}
+				}
+			}
+			post {
+				always {
+					sh 'mvn surefire-report:report-only'
+
+					publishHTML target: [
+						allowMissing: false,
+						alwaysLinkToLastBuild: true,
+						keepAll: true,
+						reportDir: 'target/site/',
+						reportFiles: 'surefire-report.html',
+						reportName: 'LinuxTestReport'
+					]
+
+					publishCoverage adapters: [
+						jacocoAdapter('target/site/jacoco/jacoco.xml')
+					],
+					sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+				}
+				success {
+					archiveArtifacts artifacts: 'target/p4.hpi', fingerprint: true
+				}
+			}
+		}
+		
+		stage('Windows Build & Test') {
+		    environment {
+                JAVA_HOME = "C:\\Program Files\\Java\\jdk-11.0.16.1"
+            }
+			agent {
+				label 'p4java-win'
+			}
+
+			stages {
+				stage('Compile') {
+					steps {
+						bat 'mvn compiler:compile spotbugs:check'
+					}
+				}
+
+				stage('Build and Test') {
+					steps {
+						bat 'mvn clean package'
+					}
+				}
+			}
+			post {
+				always {
+					bat 'mvn surefire-report:report-only'
+
+					publishHTML target: [
+						allowMissing: false,
+						alwaysLinkToLastBuild: true,
+						keepAll: true,
+						reportDir: 'target/site/',
+						reportFiles: 'surefire-report.html',
+						reportName: 'WindowsTestReport'
+					]
+				}
+			}
+		}
+		
+		stage('Launch system tests') {
+			steps {
+				build job: 'jenkins-system-tests/main', wait: false
+			}
+		}
+	}
+}

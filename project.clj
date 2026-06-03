@@ -1,4 +1,4 @@
-(defproject anvil/anvil "0.2.0-SNAPSHOT"
+(defproject superbadlabs/anvil "0.2.1"
   :description
   "anvil — a free, OSS, single-team CI server that runs your Jenkinsfile.
 
@@ -22,15 +22,19 @@
    compliance reports, HA controller, hosted SaaS — those distinguish
    Chengis."
 
-  :url "https://anvilci.io"   ;; placeholder; final name decision pending
+  :url "https://github.com/SuperBadLabs/anvil"
   :license {:name "Apache-2.0"
             :url "https://www.apache.org/licenses/LICENSE-2.0"}
 
-  ;; anvil consumes chengis-core. During monorepo development the dependency
-  ;; is a :source-paths merge across the sibling directory (../chengis-core/src).
-  ;; When chengis-core ships as a separate Maven artifact, this drops to a
-  ;; normal :dependencies entry and the :source-paths reverts to ["src"] only.
-  :dependencies [[org.clojure/clojure "1.12.4"]
+  ;; anvil consumes chengis-core. Post-extraction (2026-06-03), chengis-core
+  ;; lives in its own repo (github.com/SuperBadLabs/chengis-core) and is
+  ;; consumed via local Maven cache populated by `lein install` from a
+  ;; pinned git tag (per RS2 of the extraction board — Clojars deferred
+  ;; until external demand justifies it). CI workflows do the same dance
+  ;; as a prelude step before lein test / lein run.
+  :dependencies [[superbadlabs/chengis-core "0.1.0"]
+
+                 [org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
                  [org.clojure/tools.cli "1.3.250"]
 
@@ -64,10 +68,10 @@
                  [org.apache.groovy/groovy "4.0.21"]
                  [org.apache.groovy/groovy-jsr223 "4.0.21"]]
 
-  ;; Dev-time source path merge: chengis-core lives at ../chengis-core
-  ;; relative to this project.
-  :source-paths   ["src"      "../chengis-core/src"]
-  :resource-paths ["resources" "../chengis-core/resources"]
+  ;; chengis-core is now a proper Maven dep (see :dependencies above);
+  ;; no sibling source-paths merge needed post-extraction.
+  :source-paths   ["src"]
+  :resource-paths ["resources"]
 
   :main anvil.core
 

@@ -9,14 +9,14 @@
        coverage tier reached and which step types appeared.
 
    The corpus itself lives at `test/resources/jenkins-corpus/` at the
-   repo root. From anvil/ the relative path is `../test/resources/...`."
+   repo root. From anvil/ the relative path is `test/resources/...`."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.ir :as ir]))
 
-(def ^:private corpus-dir "../test/resources/jenkins-corpus")
+(def ^:private corpus-dir "test/resources/jenkins-corpus")
 
 (defn- jenkinsfiles []
   (->> (file-seq (io/file corpus-dir))

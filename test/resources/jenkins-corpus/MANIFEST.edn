@@ -1,0 +1,327 @@
+;; Curated corpus of real-world DECLARATIVE Jenkinsfiles for the
+;; chengis.compat.jenkins parser. Every file in :files satisfies the
+;; acceptance rules below. Tags in :patterns drive coverage analysis —
+;; see :pattern-coverage at the bottom for the rollup.
+{:fetched-at      "2026-05-27"
+ :curated-by      "claude (general-purpose agent for T0.3)"
+ :scope           "Declarative Jenkinsfile corpus for chengis.compat.jenkins parser tests."
+
+ :acceptance-rules
+ ["Must contain a top-level `pipeline { ... }` block (declarative)."
+  "License must be Apache-2.0, MIT, or BSD-{2,3}-Clause — verified against repository LICENSE file (or .license.spdx_id via GitHub API)."
+  "Must be from a real, active OSS project — not a tutorial or personal repo."
+  "Filename pattern: <org>__<repo>__<ref>__<path>.Jenkinsfile (slashes in path replaced with underscores)."]
+
+ :files
+ [{:path        "apache__zookeeper__master__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/zookeeper/master/Jenkinsfile"
+   :source-repo "apache/zookeeper"
+   :source-ref  "master"  ;; tip at fetch time: 34a9492085b3ecc18c9eb83414ebe5e17ede287a
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/zookeeper/blob/master/LICENSE.txt"
+   :patterns    #{:agent-label :stage-level-agent :agent-any :matrix :sh
+                  :options :triggers :tools :environment-block
+                  :archive-artifacts :junit :post-always :post-cleanup
+                  :script-block}
+   :line-count  78
+   :notes       "Top-level agent { label 'Hadoop' }, matrix over JAVA_VERSION with stage-level agent any, post.always + post.cleanup, tools maven+jdk."}
+
+  {:path        "apache__zookeeper__master__Jenkinsfile-PreCommit.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/zookeeper/master/Jenkinsfile-PreCommit"
+   :source-repo "apache/zookeeper"
+   :source-ref  "master"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/zookeeper/blob/master/LICENSE.txt"
+   :patterns    #{:agent-label :sh :options :tools :junit
+                  :post-always :post-cleanup :script-block}
+   :line-count  62
+   :notes       "Simpler precommit variant; single agent { label }, tools, post.cleanup with script block."}
+
+  {:path        "apache__dubbo__3.3__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/dubbo/3.3/Jenkinsfile"
+   :source-repo "apache/dubbo"
+   :source-ref  "3.3"  ;; tip at fetch time: abf4e985815aa70aaa79294b680f0ad814a2f45d
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/dubbo/blob/3.3/LICENSE"
+   :patterns    #{:agent-label :sh :options :triggers :tools :environment-block
+                  :when :script-block :timeout :archive-artifacts
+                  :post-failure}
+   :line-count  138
+   :notes       "agent { node { label } }, env, tools, triggers cron+pollSCM, multiple stages with when{expression}, timeout(), inner script blocks, post.failure with mail."}
+
+  {:path        "apache__dubbo__3.3__Jenkinsfile.sonar.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/dubbo/3.3/Jenkinsfile.sonar"
+   :source-repo "apache/dubbo"
+   :source-ref  "3.3"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/dubbo/blob/3.3/LICENSE"
+   :patterns    #{:agent-label :sh :tools :with-credentials :script-block}
+   :line-count  51
+   :notes       "Compact Sonar pipeline; single stage, withCredentials inside script block, branch-conditional logic in Groovy."}
+
+  {:path        "apache__maven__master__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/maven/master/Jenkinsfile"
+   :source-repo "apache/maven"
+   :source-ref  "master"  ;; tip at fetch time: 431bb396ff975cbbbc57313e3ce52950f612867f
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/maven/blob/master/LICENSE"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :options
+                  :timeout :with-env :junit :script-block}
+   :line-count  62
+   :notes       "agent none with stage-level agent { node { label } }, top-level helper defs around pipeline block, timeout inside step, withEnv, junit in helper."}
+
+  {:path        "apache__camel__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/camel/main/Jenkinsfile"
+   :source-repo "apache/camel"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/camel/blob/main/LICENSE.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :options
+                  :parameters :environment-block :tools :matrix :when
+                  :with-credentials :timeout :junit :script-block
+                  :post-always}
+   :line-count  197
+   :notes       "Heavy declarative: agent none + matrix with axes+excludes, parameters (booleanParam+choice), environment with credentials(), nested when{anyOf{expression}}, withCredentials, junit, emailext post.always."}
+
+  {:path        "apache__camel__main__Jenkinsfile.deploy.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/camel/main/Jenkinsfile.deploy"
+   :source-repo "apache/camel"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/camel/blob/main/LICENSE.txt"
+   :patterns    #{:agent-label :sh :options :parameters :tools
+                  :environment-block :when :post-always}
+   :line-count  83
+   :notes       "Simpler camel deploy variant; agent { label }, parameters, environment, when{anyOf{branch}} branch matching, post.always with emailext."}
+
+  {:path        "apache__camel-quarkus__main__Jenkinsfile.sonarcloud.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/camel-quarkus/main/Jenkinsfile.sonarcloud"
+   :source-repo "apache/camel-quarkus"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/camel-quarkus/blob/main/LICENSE.txt"
+   :patterns    #{:agent-label :sh :options :tools :environment-block
+                  :with-credentials}
+   :line-count  58
+   :notes       "Single-stage Sonar pipeline with per-stage environment block and withCredentials for SONAR_TOKEN."}
+
+  {:path        "apache__phoenix__master__Jenkinsfile.yetus.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/phoenix/master/Jenkinsfile.yetus"
+   :source-repo "apache/phoenix"
+   :source-ref  "master"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/phoenix/blob/master/LICENSE"
+   :patterns    #{:agent-label :sh :options :timeout :environment-block
+                  :archive-artifacts :junit :post-always}
+   :line-count  58
+   :notes       "Yetus precommit; per-stage options{timeout(...)}, per-stage environment, archiveArtifacts with excludes, junit."}
+
+  {:path        "apache__cassandra-java-driver__4.x__Jenkinsfile-datastax.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/cassandra-java-driver/4.x/Jenkinsfile-datastax"
+   :source-repo "apache/cassandra-java-driver"
+   :source-ref  "4.x"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/cassandra-java-driver/blob/4.x/LICENSE-2.0.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :options
+                  :parameters :triggers :environment-block :script-block
+                  :timeout :when :post-always :post-success :post-failure
+                  :post-changed}
+   :line-count  639
+   :notes       "Large pipeline (DataStax). agent none with stage-level agents, helper defs above pipeline{}, rich parameters{} (choice/booleanParam/string), triggers{parameterizedCron}, full post{} matrix incl. changed."}
+
+  {:path        "apache__ambari__trunk__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/ambari/trunk/Jenkinsfile"
+   :source-repo "apache/ambari"
+   :source-ref  "trunk"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/ambari/blob/trunk/LICENSE.txt"
+   :patterns    #{:agent-label :sh :tools :environment-block :parallel
+                  :with-env :dir :script-block}
+   :line-count  179
+   :notes       "agent { node { label } }, tools, top-level environment block, multiple parallel{} blocks of stages, withEnv, dir() step, script blocks calling @NonCPS helpers."}
+
+  {:path        "apache__cxf__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/cxf/main/Jenkinsfile"
+   :source-repo "apache/cxf"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/cxf/blob/main/LICENSE"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :options
+                  :triggers :matrix :tools :environment-block :sequential-stages
+                  :junit :post-always :post-failure :post-cleanup
+                  :script-block}
+   :line-count  176
+   :notes       "agent none, nested stages (Prepare -> Build matrix), matrix over JAVA_VERSION, sequential nested stages within matrix, options{skipStagesAfterUnstable, quietPeriod}, post{failure, unstable, fixed}."}
+
+  {:path        "apache__struts__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/struts/main/Jenkinsfile"
+   :source-repo "apache/struts"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/struts/blob/main/LICENSE.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :options
+                  :triggers :tools :environment-block :sequential-stages
+                  :when :with-credentials :dir :junit :post-always
+                  :post-failure :script-block}
+   :line-count  233
+   :notes       "agent none, parallel JDK 17/21 top-level stages, each with nested sequential stages, when{anyOf{branch}}, withCredentials(file), dir() step, sshPublisher, post{failure, unstable, fixed}."}
+
+  {:path        "apache__hop__main__Jenkinsfile.daily.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/hop/main/Jenkinsfile.daily"
+   :source-repo "apache/hop"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/hop/blob/main/LICENSE.txt"
+   :patterns    #{:agent-label :sh :options :triggers :tools :environment-block
+                  :with-credentials :junit :post-always :post-cleanup}
+   :line-count  122
+   :notes       "Top-level agent { label }, triggers cron, environment with credentials() and sh()-resolved values, per-stage tools override, withCredentials, post.always + cleanWs()."}
+
+  {:path        "apache__incubator-kie-optaplanner__main__.ci_jenkins_Jenkinsfile.turtle.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/incubator-kie-optaplanner/main/.ci/jenkins/Jenkinsfile.turtle"
+   :source-repo "apache/incubator-kie-optaplanner"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/incubator-kie-optaplanner/blob/main/LICENSE-ASL-2.0.txt"
+   :patterns    #{:agent-docker :sh :options :timeout :environment-block
+                  :library-import :shared-library :script-block :junit
+                  :post-always :post-success :post-cleanup}
+   :line-count  120
+   :notes       "@Library('jenkins-pipeline-shared-libraries'), agent { docker { image args label } }, environment with credentials(), post{always, success, unsuccessful, cleanup}, helper functions below pipeline{}."}
+
+  {:path        "apache__incubator-kie-optaplanner__main__.ci_jenkins_project_Jenkinsfile.weekly.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/incubator-kie-optaplanner/main/.ci/jenkins/project/Jenkinsfile.weekly"
+   :source-repo "apache/incubator-kie-optaplanner"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/incubator-kie-optaplanner/blob/main/LICENSE-ASL-2.0.txt"
+   :patterns    #{:agent-label :sh :options :timeout :environment-block
+                  :library-import :shared-library :script-block
+                  :post-failure :post-success :post-always}
+   :line-count  189
+   :notes       "@Library import, agent { label util.avoidFaultyNodes(...) } (method-call label), nested per-stage post{} blocks, calls into shared library functions."}
+
+  {:path        "apache__incubator-kie-optaplanner__main__.ci_jenkins_project_Jenkinsfile.nightly.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/apache/incubator-kie-optaplanner/main/.ci/jenkins/project/Jenkinsfile.nightly"
+   :source-repo "apache/incubator-kie-optaplanner"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/apache/incubator-kie-optaplanner/blob/main/LICENSE-ASL-2.0.txt"
+   :patterns    #{:agent-label :sh :options :timeout :when :environment-block
+                  :library-import :shared-library :script-block
+                  :post-failure :post-success :post-always}
+   :line-count  237
+   :notes       "Similar to weekly but adds when{expression} branch gating for 9.x migration stage and multiple build-job orchestration."}
+
+  {:path        "jenkinsci__docker-inbound-agent__master__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/jenkinsci/docker-inbound-agent/master/Jenkinsfile"
+   :source-repo "jenkinsci/docker-inbound-agent"
+   :source-ref  "master"
+   :license     "MIT"
+   :license-url "https://github.com/jenkinsci/docker-inbound-agent/blob/master/LICENSE"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :bat :options
+                  :timeout :environment-block :matrix :when :sequential-stages
+                  :script-block :junit :post-always}
+   :line-count  105
+   :notes       "agent none, matrix over IMAGE_TYPE with stage-level agent { label <helperFn>(env.IMAGE_TYPE) }, when{environment}/when{buildingTag()}/when{not}, powershell+sh+bat mix via isUnix()."}
+
+  {:path        "jenkinsci__p4-plugin__master__Jenkinsfile-integ.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/jenkinsci/p4-plugin/master/Jenkinsfile-integ"
+   :source-repo "jenkinsci/p4-plugin"
+   :source-ref  "master"
+   :license     "BSD-2-Clause"
+   :license-url "https://github.com/jenkinsci/p4-plugin/blob/master/LICENSE.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-label :sh :bat
+                  :environment-block :sequential-stages :publish-html
+                  :archive-artifacts :post-always :post-success}
+   :line-count  95
+   :notes       "agent none with stage-level agents (Linux + Windows + a final stage); per-OS sh vs bat, publishHTML, archiveArtifacts in post.success, sequential nested stages."}
+
+  {:path        "jenkinsci__analysis-model__main__etc_Jenkinsfile.declarative.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/jenkinsci/analysis-model/main/etc/Jenkinsfile.declarative"
+   :source-repo "jenkinsci/analysis-model"
+   :source-ref  "main"
+   :license     "MIT"
+   :license-url "https://github.com/jenkinsci/analysis-model/blob/main/LICENSE"
+   :patterns    #{:agent-any :sh :tools :junit :post-always}
+   :line-count  28
+   :notes       "Minimal declarative example: `agent 'any'` (bare string form), tools, single stage, junit in post.always. Good smoke test."}
+
+  {:path        "spring-projects__spring-hateoas-examples__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/spring-projects/spring-hateoas-examples/main/Jenkinsfile"
+   :source-repo "spring-projects/spring-hateoas-examples"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/spring-projects/spring-hateoas-examples/blob/main/LICENSE.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-docker :sh :options
+                  :triggers :parallel :post-changed :script-block}
+   :line-count  69
+   :notes       "agent none + stage-level agent { docker { image args } }, parallel{} of stages each with their own docker agent, post.changed with slackSend/emailext."}
+
+  {:path        "spring-projects__spring-boot-data-geode__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/spring-projects/spring-boot-data-geode/main/Jenkinsfile"
+   :source-repo "spring-projects/spring-boot-data-geode"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/spring-projects/spring-boot-data-geode/blob/main/LICENSE.txt"
+   :patterns    #{:agent-any :sh :options :triggers :timeout :environment-block
+                  :with-credentials :junit :post-changed :script-block}
+   :line-count  145
+   :notes       "Uses bare `node { ... }` block above the `pipeline {}` for property loading (scripted prelude — declarative pipeline still parses), agent any, per-stage timeout, environment with credentials(), nested withCredentials, docker.image(...).inside in script."}
+
+  {:path        "spring-projects__spring-plugin__main__Jenkinsfile.Jenkinsfile"
+   :source-url  "https://raw.githubusercontent.com/spring-projects/spring-plugin/main/Jenkinsfile"
+   :source-repo "spring-projects/spring-plugin"
+   :source-ref  "main"
+   :license     "Apache-2.0"
+   :license-url "https://github.com/spring-projects/spring-plugin/blob/main/LICENSE.txt"
+   :patterns    #{:agent-none :stage-level-agent :agent-docker :sh :options
+                  :triggers :timeout :environment-block :when
+                  :stash :unstash :dir :junit :post-changed :script-block}
+   :line-count  175
+   :notes       "agent none with stage-level agent { docker { image args } } repeated per stage, when{branch 'release'}, stash/unstash for build_info, dir() step, post.changed with slack/email."}]
+
+ ;; --- coverage rollup ---
+ ;; Number of files in :files that include each pattern tag.
+ ;; Counts are derived from ripgrep file-presence over the corpus,
+ ;; cross-checked against the per-file :patterns entries above.
+ ;; Tags listed with 0 are intentional gaps (no file currently
+ ;; exercises them — candidates for future additions).
+ :pattern-coverage
+ {:agent-any            3   ;; zookeeper, spring-boot-data-geode, analysis-model (bare-string `agent 'any'`)
+  :agent-label          18  ;; majority of corpus
+  :agent-docker         3   ;; optaplanner-turtle, spring-hateoas, spring-plugin
+  :agent-dockerfile     0   ;; GAP — no `agent { dockerfile { ... } }` in corpus
+  :agent-none           9   ;; maven, camel, camel-deploy, cassandra-datastax, cxf, struts, p4-integ, docker-inbound-agent, spring-hateoas, spring-plugin
+  :stage-level-agent    10  ;; pipelines using `agent none` at top + per-stage agents
+  :parallel             2   ;; ambari, spring-hateoas-examples (declarative `parallel { ... }` only)
+  :fail-fast            0   ;; GAP — no `failFast true` option in corpus
+  :sequential-stages    4   ;; cxf, struts, p4-integ, docker-inbound-agent (nested `stages {}` blocks)
+  :matrix               5   ;; docker-inbound-agent, cassandra-datastax, zookeeper, cxf, camel
+  :sh                   23  ;; universal across the corpus
+  :bat                  2   ;; p4-integ, docker-inbound-agent
+  :dir                  5   ;; ambari, struts, optaplanner-turtle, spring-plugin, cxf
+  :with-env             2   ;; maven, ambari
+  :with-credentials     7   ;; dubbo-sonar, camel, camel-quarkus-sonar, hop, struts, spring-boot-data-geode (multi), spring-plugin (env credentials)
+  :timeout              9   ;; many — declarative `timeout()` options and inline `timeout()` step calls
+  :retry                0   ;; GAP
+  :script-block         16  ;; widespread; declarative-with-embedded-scripted is common
+  :archive-artifacts    5   ;; zookeeper, dubbo, phoenix, p4-integ, struts (sshPublisher counts separately)
+  :junit                12  ;; widespread
+  :stash                1   ;; spring-plugin only
+  :unstash              1   ;; spring-plugin only
+  :publish-html         1   ;; p4-integ only
+  :when                 9   ;; dubbo, optaplanner-nightly, docker-inbound-agent, spring-plugin, cassandra-datastax, camel-deploy, camel, struts, maven (also dubbo-sonar has if/else in script)
+  :parameters           3   ;; cassandra-datastax, camel, camel-deploy
+  :triggers             9   ;; dubbo, spring-plugin, cassandra-datastax, zookeeper, spring-boot-data-geode, hop, cxf, spring-hateoas, struts
+  :options              19  ;; near-universal
+  :tools                17  ;; near-universal among Apache projects with Maven/JDK toolchain
+  :environment-block    19  ;; near-universal
+  :post-always          13  ;; widespread
+  :post-success         4   ;; p4-integ, cassandra-datastax, optaplanner-turtle, optaplanner-weekly (sendSuccessNotification)
+  :post-failure         6   ;; dubbo, cassandra-datastax, cxf, struts, optaplanner-weekly, optaplanner-nightly
+  :post-changed         3   ;; spring-hateoas-examples, spring-boot-data-geode, spring-plugin
+  :post-cleanup         3   ;; zookeeper, zookeeper-PreCommit, optaplanner-turtle (declarative `cleanup {}` post-section)
+  :library-import       3   ;; optaplanner-turtle, optaplanner-weekly, optaplanner-nightly (@Library)
+  :shared-library       3}} ;; same files — they call into jenkins-pipeline-shared-libraries
+

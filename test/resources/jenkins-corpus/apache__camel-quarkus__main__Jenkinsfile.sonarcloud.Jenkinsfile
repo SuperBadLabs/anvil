@@ -1,0 +1,58 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+def AGENT_LABEL = env.AGENT_LABEL ?: 'ubuntu'
+def JDK_NAME = env.JDK_NAME ?: 'jdk_17_latest'
+def MAVEN_PARAMS = '-B -e -ntp'
+
+pipeline {
+    agent {
+        label AGENT_LABEL
+    }
+
+    tools {
+        jdk JDK_NAME
+    }
+
+    options {
+        buildDiscarder(
+            logRotator(artifactNumToKeepStr: '5', numToKeepStr: '10')
+        )
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Build & Install') {
+            environment {
+                MAVEN_OPTS = "-Xmx4600m"
+            }
+            steps {
+                sh "./mvnw ${MAVEN_PARAMS} -Dquickly clean install"
+            }
+        }
+
+        stage('Code Quality Review') {
+            environment {
+                MAVEN_OPTS = "-Xmx4600m"
+            }
+            steps {
+                withCredentials([string(credentialsId: 'apache-camel-core', variable: 'SONAR_TOKEN')]) {
+                    sh "./mvnw $MAVEN_PARAMS -Dsonar.host.url=https://sonarcloud.io -Dsonar.java.experimental.batchModeSizeInKB=2048 -Dsonar.organization=apache -Dsonar.projectKey=apache_camel_quarkus -Dsonar.branch.name=$BRANCH_NAME org.sonarsource.scanner.maven:sonar-maven-plugin:sonar"
+                }
+            }
+        }        
+    }
+}

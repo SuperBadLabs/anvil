@@ -8,7 +8,7 @@
             [clojure.edn :as edn]
             [anvil.cli.import-jenkinsfile :as cli]))
 
-(def ^:private corpus-dir "../test/resources/jenkins-corpus")
+(def ^:private corpus-dir "test/resources/jenkins-corpus")
 (def ^:private tmp-dir "target/test-import")
 
 (defn- ensure-tmp-dir! []

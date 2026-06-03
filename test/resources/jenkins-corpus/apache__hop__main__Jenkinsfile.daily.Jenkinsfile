@@ -1,0 +1,122 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+def AGENT_LABEL = env.AGENT_LABEL ?: 'ubuntu'
+def JDK_NAME = env.JDK_NAME ?: 'jdk_21_latest'
+def MAVEN_NAME = env.MAVEN_NAME ?: 'maven_3_latest'
+
+def MAVEN_PARAMS = "-T 2 -U -B -e -fae -V -Dmaven.compiler.fork=true -Dsurefire.rerunFailingTestsCount=2 -DSkipTestContainers=true"
+
+pipeline {
+
+    agent {
+        label AGENT_LABEL
+    }
+
+    triggers {
+        cron('H H(2-4) * * *')
+    }
+
+    tools {
+        jdk JDK_NAME
+        maven MAVEN_NAME
+    }
+
+    environment {
+        MAVEN_SKIP_RC = true
+        dockerImage = ''
+        imagename = 'hop'
+        jenkins_user = "${USER}"
+        jenkins_uid = sh(script: "id -u ${USER}", returnStdout: true).trim()
+        jenkins_gid = sh(script: "id -g ${USER}", returnStdout: true).trim()
+        jenkins_group = sh(script: "id -gn ${USER}", returnStdout: true).trim()
+        GCP_CREDS = credentials('gcp-access-hop')
+    }
+
+    options {
+        buildDiscarder(
+            logRotator(artifactNumToKeepStr: '5', numToKeepStr: '10')
+        )
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Initialization') {
+              steps {
+                  echo 'Building Branch: 2.0.0'
+                  echo 'Using PATH = ' + env.PATH
+                  echo 'Using Jenkins user = ' + jenkins_user
+                  echo 'Using Jenkins userid = ' + jenkins_uid
+                  echo 'Using Jenkins group = ' + jenkins_group
+                  echo 'Using Jenkins groupid = ' + jenkins_gid
+              }
+         }
+         stage('Cleanup') {
+              steps {
+                  echo 'Cleaning up the workspace'
+                  deleteDir()
+              }
+         }
+        stage('Checkout') {
+            steps {
+                echo 'Checking out branch 2.0.0'
+                checkout scm
+            }
+        }
+        stage('Build & Test') {
+            steps {
+                echo 'Build & Test'
+                sh "mvn $MAVEN_PARAMS clean install"
+            }
+        }
+        stage('Code Quality') {
+            tools{
+                jdk 'jdk_17_latest'
+            }
+            steps {
+                echo 'Checking Code Quality on SonarCloud'
+                withCredentials([string(credentialsId: 'sonarcloud-key-apache-hop', variable: 'SONAR_TOKEN')]) {
+                    sh 'mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.host.url=https://sonarcloud.io -Dsonar.organization=apache -Dsonar.projectKey=apache_hop -Dsonar.branch.name=${BRANCH_NAME} -Dsonar.token=${SONAR_TOKEN}'
+                }
+            }
+        }
+        stage('Create Docker image & Run Tests'){
+            steps {
+                    sh 'cp $GCP_CREDS google-key-apache-hop-it.json'
+                    sh "integration-tests/scripts/run-tests-docker.sh JENKINS_USER=${jenkins_user} JENKINS_UID=${jenkins_uid} JENKINS_GROUP=${jenkins_group} JENKINS_GID=${jenkins_gid} GCP_KEY_FILE=google-key-apache-hop-it.json"
+                }
+            post {
+                always {
+                    junit(testResults: 'integration-tests/**/surefire-reports/*.xml', allowEmptyResults: true)
+                }
+            }
+        }
+
+    }
+    post {
+        always {
+            cleanWs()
+            emailext(
+                subject: '${DEFAULT_SUBJECT}',
+                body: '${DEFAULT_CONTENT}',
+                recipientProviders: [[$class: 'DevelopersRecipientProvider']]
+            )
+        }
+    }
+}

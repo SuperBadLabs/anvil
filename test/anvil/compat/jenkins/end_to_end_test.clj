@@ -14,7 +14,7 @@
             [anvil.compat.jenkins.ir :as ir]))
 
 (def ^:private zookeeper-precommit
-  (slurp "../test/resources/jenkins-corpus/apache__zookeeper__master__Jenkinsfile-PreCommit.Jenkinsfile"))
+  (slurp "test/resources/jenkins-corpus/apache__zookeeper__master__Jenkinsfile-PreCommit.Jenkinsfile"))
 
 (defn- flatten-pipeline-for-orchestrator
   "Squash stages.post and pipeline.post into the stage list so the reference
