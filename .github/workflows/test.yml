@@ -36,15 +36,16 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core 0.1.0 from git tag (per RS2)
+      - name: Install chengis-core 0.2.0-SNAPSHOT from master (Brasstacks v0.2 dev)
         run: |
-          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
-            git clone --depth 1 --branch v0.1.0 \
-              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
-            (cd /tmp/chengis-core && lein install)
-          else
-            echo "chengis-core 0.1.0 already in cache, skipping install"
-          fi
+          # Track chengis-core master during the v0.2 SNAPSHOT cycle. After
+          # CC2-SOAK clears and v0.2.0 is tagged, switch back to a pinned
+          # --branch v0.2.0 install. Re-installs every run because SNAPSHOT
+          # contents change as the chengis-core v0.2 tranches ship.
+          rm -rf /tmp/chengis-core
+          git clone --depth 1 --branch master \
+            https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+          (cd /tmp/chengis-core && lein install)
 
       - name: lein test (default selector)
         run: lein test
@@ -85,13 +86,16 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core 0.1.0
+      - name: Install chengis-core 0.2.0-SNAPSHOT from master (Brasstacks v0.2 dev)
         run: |
-          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
-            git clone --depth 1 --branch v0.1.0 \
-              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
-            (cd /tmp/chengis-core && lein install)
-          fi
+          # Track chengis-core master during the v0.2 SNAPSHOT cycle. After
+          # CC2-SOAK clears and v0.2.0 is tagged, switch back to a pinned
+          # --branch v0.2.0 install. Re-installs every run because SNAPSHOT
+          # contents change as the chengis-core v0.2 tranches ship.
+          rm -rf /tmp/chengis-core
+          git clone --depth 1 --branch master \
+            https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+          (cd /tmp/chengis-core && lein install)
 
       - name: lein test :browser
         run: lein test :browser
