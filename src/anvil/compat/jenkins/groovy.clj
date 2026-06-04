@@ -180,7 +180,24 @@
     {:type :gstring :text (str (.getText ^GStringExpression node))}
 
     :else
-    {:type :other :class (.getName (class node)) :text (str node)}))
+    ;; :line-start / :line-end / :col-start / :col-end let consumers
+    ;; (the echo translator most importantly) extract the original
+    ;; source span for nodes like BinaryExpression / PropertyExpression /
+    ;; GStringExpression-with-property-access that we don't reduce to a
+    ;; literal in cdata. Without these positions, `(:text node)` is the
+    ;; Java AST .toString() which is decidedly NOT what should land in
+    ;; a build console.
+    (let [line-s (when (instance? org.codehaus.groovy.ast.ASTNode node)
+                   (.getLineNumber ^org.codehaus.groovy.ast.ASTNode node))
+          line-e (when (instance? org.codehaus.groovy.ast.ASTNode node)
+                   (.getLastLineNumber ^org.codehaus.groovy.ast.ASTNode node))
+          col-s  (when (instance? org.codehaus.groovy.ast.ASTNode node)
+                   (.getColumnNumber ^org.codehaus.groovy.ast.ASTNode node))
+          col-e  (when (instance? org.codehaus.groovy.ast.ASTNode node)
+                   (.getLastColumnNumber ^org.codehaus.groovy.ast.ASTNode node))]
+      (cond-> {:type :other :class (.getName (class node)) :text (str node)}
+        (and line-s (pos? line-s)) (assoc :line-start line-s :line-end line-e
+                                          :col-start col-s :col-end col-e)))))
 
 (defn statement->call-public
   "Public wrapper around `statement->call` for use from translator.clj.

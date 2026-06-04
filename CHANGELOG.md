@@ -1,5 +1,106 @@
 # anvil — changelog
 
+## Unreleased — post-0.3.0 wild-corpus exposure
+
+### Honest amendment to the 0.3.0 release notes
+
+The 0.3.0 release was framed as the "Parity Release." A real-world matrix
+run against 15 diverse non-jenkinsci OSS Jenkinsfiles (hibernate-orm,
+apache-camel, eclipse-mojarra, apache-hbase, etc.) — recorded in
+`docs/jenkins-compat/wild-corpus-receipt.md` — exposed that the parity
+delivered was **parser parity, not executor parity**.
+
+Specifically:
+
+- Anvil parses 15/15 real-world Jenkinsfiles without exception, including
+  scripted+declarative mixes, k8s YAML heredocs, and 66 KB declaratives.
+- Anvil ran zero of them to a real built artifact. The "SUCCESS" results
+  in the receipt are walks of the pipeline IR, not builds — most matched
+  one of these silent-skip paths:
+    - `agent { kubernetes }` / `agent { docker }` / `agent { dockerfile }`
+      → body skipped because anvil has no corresponding agent backend
+    - `agent none` declaratives without per-stage agents → silently run
+      on the controller
+    - `tool('jdk_17_latest')` → returns `""` and the user's
+      `${tool 'X'}/bin` PATH ends up wrong
+    - `withCredentials([…])` → binds the env var to `""` because no
+      secret resolves
+    - Jenkins-plugin calls (`archiveArtifacts`, `junit`, `slackSend`,
+      `recordIssues`, `publishCoverage`, …) → recorded as `[unknown]`
+      and treated as no-ops while the build returns green
+
+These are not bugs in v0.3.0 — they are the load-bearing subsystems an
+enterprise CI server has and anvil doesn't yet. v0.3.0 was correctly
+shipping its parser tier; the headline framing oversold what running
+those Jenkinsfiles meant. Operators considering anvil as a Jenkins
+drop-in for non-trivial projects should not infer build-equivalence
+from the v0.3 receipt.
+
+### What the post-0.3.0 PR (wild-corpus + executor-honesty path) lands
+
+Useful incremental fixes that unblock the cases anvil can plausibly
+execute today, and infrastructure the v0.4 executor work will build on:
+
+- **Jenkins env globals** — `JENKINS_URL`, `BUILD_NUMBER`, `BUILD_TAG`,
+  `JOB_NAME`, `WORKSPACE`, `BRANCH_NAME` + 16 more — exposed as bare
+  identifiers and via the `env.X` Expando; fixes
+  `MissingPropertyException` in scripted-eval against blueocean-style
+  `if (JENKINS_URL == X) …`.
+- **`buildPlugin` / `mavenBuild` shared-lib stubs** — record calls as
+  `:jenkins/shared-lib-unresolved` instead of crashing or silently
+  passing. Honest "we saw it, we did not run it" diagnostic.
+- **Scripted-eval fires on any non-blank source**, not just sources
+  with literal `stage()` calls.
+- **Per-job SCM auto-checkout** — new ns `anvil.compat.jenkins.scm`
+  shells out to git BEFORE the dispatcher runs the first sh step; the
+  workspace dir actually contains the source. Without this, `./mvnw`
+  exec'd into an empty directory.
+- **`params.X` binding** — scripted Pipelines reference build parameters;
+  anvil now exposes them via Expando.
+- **Top-level helper-fn defs visible to `script {}` blocks** —
+  preamble extractor strips the `pipeline {}` block (balanced-brace
+  scan, triple-quote heredoc aware) and prepends helpers so
+  `def isDeployedBranch() { … }` resolves at script-block compile time.
+- **`echo "X " + env.Y` evaluates** — translator extracts the original
+  source span (via newly-preserved AST line/column positions) and
+  emits a `:jenkins/script` step instead of dumping the Groovy AST's
+  `.toString()` into the console.
+- **Declarative `script {}` Jenkins config built-ins** — `logRotator`,
+  `buildDiscarder`, `disableConcurrentBuilds`, `parameters`, `tool`,
+  `withEnv`, +18 more — added to the `runtime.clj` binding set as
+  no-ops so `properties([buildDiscarder(logRotator(…))])` patterns
+  stop failing on MissingMethodException.
+- **`scripts/wild-corpus.bb`** — Babashka harness that reproduces the
+  receipt against any anvil instance; reads the latest persisted build
+  number so it stays honest across re-runs.
+
+Migrations 008–010 add `scm_type` / `scm_url` / `scm_branch` columns
+to `anvil_jobs` so per-job SCM persists.
+
+Test suite: 466 tests / 1517 assertions / 0 failures.
+
+### v0.4 direction — Executor Parity
+
+v0.4 closes the gap from parser-parity to executor-parity. The work
+divides cleanly between `chengis-core` (generic CI-engine subsystems,
+benefits both anvil and the chengis enterprise product) and `anvil`
+(Jenkinsfile-specific mapping over the new engine):
+
+| In chengis-core | In anvil |
+|---|---|
+| Docker agent backend (per-build container, volumes, env, signals) | `agent { docker { image 'X' } }` → chengis docker-agent API |
+| Kubernetes agent backend (real podTemplate apply, container exec) | `agent { kubernetes { yaml … } }` → chengis k8s-agent API |
+| Tool installer registry (JDK/Maven/Node/etc. version cache) | `tool('X')` → chengis tool registry |
+| Honest build result classes (NEUTRAL/UNSTABLE distinct from SUCCESS) | unsupported-agent / unresolved-step → NEUTRAL |
+| Credentials-store binding pipeline | `withCredentials([…])` → real value injection |
+| Plugin-step emulation framework + top-20 implementations | Jenkins step-name → chengis plugin-step API |
+
+This is the bulk of v0.4 engineering and it lives in chengis-core. anvil
+ships the Jenkinsfile-compat layer; chengis-product ships the SaaS /
+multi-tenant / RBAC layer on top of the same engine. The wild-corpus
+matrix re-runs after each chengis-core executor subsystem ships,
+honestly.
+
 ## 0.3.0 — Parity Release (2026-06-03)
 
 The "yes, I'll switch from Jenkins/GHA to anvil" tranche. Seven Tier-1 features close the day-to-day operator surface that v0.2 left open. Closed-by-default behind per-feature flags so upgrade is byte-identical until the operator flips each one.

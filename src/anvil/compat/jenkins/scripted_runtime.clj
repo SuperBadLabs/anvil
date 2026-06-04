@@ -300,8 +300,71 @@
    (fn [& _args] nil)))
 
 ;; ---------------------------------------------------------------------------
+;; Jenkins-env globals (bare identifiers AND env.X both work)
+;;
+;; Real Jenkins exposes a documented set of env vars both as bare global
+;; identifiers (`JENKINS_URL`, `BUILD_NUMBER`, …) and as `env.X` properties.
+;; Out-of-the-wild Jenkinsfiles use the bare form constantly — e.g.
+;; `if (JENKINS_URL == 'https://ci.jenkins.io/')` — which used to throw
+;; `MissingPropertyException: JENKINS_URL` in scripted-eval. We synthesize
+;; sensible defaults from anvil's build ctx so the property lookup succeeds
+;; AND the values match what a job-page would surface.
+;; ---------------------------------------------------------------------------
+
+(defn jenkins-env-globals
+  "Map of Jenkins-documented env-var globals derived from anvil ctx.
+   Returned as String → String so both `JENKINS_URL` (bare-identifier
+   binding lookup) and `env.JENKINS_URL` (Expando property) resolve.
+   See https://www.jenkins.io/doc/book/pipeline/jenkinsfile/#using-environment-variables"
+  [ctx]
+  (let [job-name      (or (:job-name ctx) "anvil-job")
+        build-number  (str (or (:build-number ctx) 1))
+        workspace     (or (:workspace ctx) (or (:cwd ctx) "/workspace"))
+        anvil-url     (or (:anvil-url ctx) "http://localhost:8765/")
+        branch-name   (or (:branch-name ctx) "master")]
+    {"JENKINS_URL"      anvil-url
+     "JENKINS_HOME"     (or (System/getenv "ANVIL_DATA") "/var/lib/anvil")
+     "HUDSON_URL"       anvil-url                     ; legacy alias
+     "BUILD_NUMBER"     build-number
+     "BUILD_ID"         build-number                  ; modern Jenkins: alias
+     "BUILD_DISPLAY_NAME" (str "#" build-number)
+     "BUILD_TAG"        (str "jenkins-" job-name "-" build-number)
+     "BUILD_URL"        (str anvil-url "jenkins/job/" job-name "/" build-number "/")
+     "JOB_NAME"         job-name
+     "JOB_BASE_NAME"    job-name
+     "JOB_URL"          (str anvil-url "jenkins/job/" job-name "/")
+     "WORKSPACE"        workspace
+     "WORKSPACE_TMP"    (str workspace "/.tmp")
+     "BRANCH_NAME"      branch-name
+     "CHANGE_ID"        ""
+     "CHANGE_TARGET"    ""
+     "CHANGE_BRANCH"    ""
+     "EXECUTOR_NUMBER"  "0"
+     "NODE_NAME"        "built-in"
+     "NODE_LABELS"      ""
+     "GIT_BRANCH"       branch-name
+     "GIT_COMMIT"       ""
+     "GIT_URL"          ""}))
+
+;; ---------------------------------------------------------------------------
 ;; DSL globals — currentBuild, pullRequest, infra
 ;; ---------------------------------------------------------------------------
+
+(defn- make-params
+  "Expose Jenkins's `params.X` binding — an immutable map of build
+   parameter values. Real Jenkins makes both `params.SOMETHING` and
+   `params['SOMETHING']` work; the Groovy Expando accommodates both
+   because property access falls through to setProperty lookup.
+
+   When the build was triggered without parameters, `params.X` returns
+   null (same as Jenkins). When triggered with parameters via the
+   /build/parameters API or the UI form, ctx :parameters carries the
+   String → String map and we seed the Expando with it."
+  [params-map]
+  (let [e (Expando.)]
+    (doseq [[k v] (or params-map {})]
+      (.setProperty e (name k) (if (nil? v) nil (str v))))
+    e))
 
 (defn- make-currentBuild []
   (doto (Expando.)
@@ -371,14 +434,38 @@
 ;; The full binding set
 ;; ---------------------------------------------------------------------------
 
+(defn- make-shared-lib-stub
+  "Stub for an unresolved shared-library call (buildPlugin, mavenBuild,
+   etc). Records the call + args as a scaffolding event and returns nil
+   so the surrounding script keeps running. Marks the build with a
+   :shared-lib-unresolved warning so SUCCESS doesn't pretend we built
+   something."
+  [dispatcher ctx-atom step-name]
+  (g/clojure-fn->groovy-closure
+   (fn [& args]
+     (emit dispatcher ctx-atom
+           {:scaffold? true :type :jenkins/shared-lib-unresolved
+            :name step-name
+            :argc (count args)
+            :note (str "shared library not resolved on anvil — "
+                       step-name "(...) recorded but NOT executed")})
+     nil)))
+
 (defn make-scripted-bindings
   "Full DSL binding map for whole-Jenkinsfile execution. Includes the
    base set from runtime.clj plus block-step closures + DSL globals
    needed for the unmodified ci.jenkins.io scripted Pipeline."
   [dispatcher ctx-atom env-vars]
-  (let [base (rt/make-dsl-bindings dispatcher ctx-atom env-vars)]
+  (let [env-globals (jenkins-env-globals @ctx-atom)
+        ;; Merge env globals INTO env-vars so the `env` Expando carries
+        ;; them too — `env.JENKINS_URL` and bare `JENKINS_URL` both work.
+        ;; Caller-provided env-vars win on conflict (test overrides etc.).
+        env-vars+ (merge env-globals env-vars)
+        base (rt/make-dsl-bindings dispatcher ctx-atom env-vars+)]
     (merge
      base
+     ;; Jenkins env globals — bare identifiers (JENKINS_URL, BUILD_NUMBER, …)
+     env-globals
      {;; Block-step closures
       "__node"           (make-node-closure dispatcher ctx-atom)
       "__stage"          (make-stage-closure dispatcher ctx-atom)
@@ -447,10 +534,24 @@
       "__esLint"          (make-noop-fn)
       "__styleLint"       (make-noop-fn)
       "__launchable"      (make-noop-fn)
+      ;; Shared-library entry-points (jenkins-infra/pipeline-library and
+      ;; common org templates). These are the most-frequent first call in
+      ;; real-world Jenkinsfiles — without a stub the methodMissing path
+      ;; throws and the build looks busted for a reason the user can't
+      ;; act on. Stubs RECORD the call so reports show "the Jenkinsfile
+      ;; invoked buildPlugin(...) but the library is not resolved".
+      "__buildPlugin"     (make-shared-lib-stub dispatcher ctx-atom "buildPlugin")
+      "__buildPluginWithGradle" (make-shared-lib-stub dispatcher ctx-atom "buildPluginWithGradle")
+      "__mavenBuild"      (make-shared-lib-stub dispatcher ctx-atom "mavenBuild")
+      "__gradleBuild"     (make-shared-lib-stub dispatcher ctx-atom "gradleBuild")
+      "__nodejs"          (make-shared-lib-stub dispatcher ctx-atom "nodejs")
+      "__buildPython"     (make-shared-lib-stub dispatcher ctx-atom "buildPython")
+      "__buildDockerImage" (make-shared-lib-stub dispatcher ctx-atom "buildDockerImage")
       ;; DSL globals (accessed without leading __ — properties on the
       ;; binding, not methodMissing routes)
       "currentBuild"     (make-currentBuild)
       "pullRequest"      (make-pullRequest)
+      "params"           (make-params (:parameters @ctx-atom))
       "infra"            (make-infra dispatcher ctx-atom)
       ;; checkout scm — `scm` is a placeholder global; checkout is a
       ;; method recorded as a leaf via base bindings.

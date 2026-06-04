@@ -53,3 +53,106 @@
     (let [shs (filter #(= :sh (first %)) (effects dsp))]
       (is (some #(re-find #"mvn clean install" (str (:cmd (second %)))) shs)
           "infra.runMaven should shell out to mvn"))))
+
+(deftest jenkins-env-globals-resolve-as-bare-identifiers
+  (testing "JENKINS_URL et al. are bare-identifier accessible — fixes
+            blueocean-style `if (JENKINS_URL == '...') { … }` which used
+            to throw MissingPropertyException in scripted-eval"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}
+                          :job-name "demo-job" :build-number 42
+                          :anvil-url "http://dogfood:8765/"})
+          src (str "def hits = []\n"
+                   "hits << JENKINS_URL\n"
+                   "hits << BUILD_NUMBER\n"
+                   "hits << JOB_NAME\n"
+                   "hits << WORKSPACE\n"
+                   "sh \"echo ${hits.join(',')}\"\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp)
+                     (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"http://dogfood:8765/" %) shs))
+        (is (some #(re-find #",42," %) shs)         "BUILD_NUMBER threads through")
+        (is (some #(re-find #"demo-job" %) shs)     "JOB_NAME threads through")
+        (is (some #(re-find #"/workspace" %) shs)   "WORKSPACE threads through")))))
+
+(deftest env-dot-globals-also-work
+  (testing "env.JENKINS_URL — the Expando-property form — should resolve
+            to the same value as the bare identifier"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}
+                          :job-name "job-a" :build-number 7})
+          src "sh \"j=${env.JOB_NAME} b=${env.BUILD_NUMBER}\""]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp) (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"j=job-a b=7" %) shs))))))
+
+(deftest buildPlugin-records-as-shared-lib-unresolved
+  (testing "buildPlugin(...) — the dominant jenkins-infra one-liner — used
+            to throw MissingMethodException. Now it's recorded as a
+            shared-lib-unresolved scaffolding effect so the build report
+            shows 'we saw the call but cannot resolve the shared library'
+            instead of either crashing or silently passing"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}})
+          src (str "buildPlugin(\n"
+                   "  forkCount: '1C',\n"
+                   "  useContainerAgent: false,\n"
+                   "  configurations: [\n"
+                   "    [platform: 'linux', jdk: 25],\n"
+                   "    [platform: 'windows', jdk: 21]\n"
+                   "])\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [recs (filter #(= :jenkins/shared-lib-unresolved (first %))
+                         (effects dsp))]
+        (is (seq recs) "buildPlugin call should be recorded")
+        (is (some (fn [[_ v]] (= "buildPlugin" (:name v))) recs)
+            "the recorded :name is buildPlugin")))))
+
+(deftest params-binding-exposes-build-parameters
+  (testing "params.X reads build parameters (apache-cassandra was failing on
+            `No such property: params for class: JenkinsDSLScript`)"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}
+                          :parameters {"SKIP_CI" "false" "GIT_BRANCH" "trunk"}})
+          src (str "def skip = params.SKIP_CI\n"
+                   "def br = params.GIT_BRANCH\n"
+                   "sh \"echo skip=${skip} branch=${br}\"\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp) (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"skip=false" %) shs))
+        (is (some #(re-find #"branch=trunk" %) shs))))))
+
+(deftest params-binding-empty-when-no-parameters
+  (testing "params.X with no parameters returns null (matches Jenkins)
+            — `params.X == null` works in scripted-eval"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {} :parameters {}})
+          src (str "if (params.NOT_SET == null) { sh \"echo null-as-expected\" }\n"
+                   "else { sh \"echo unexpected: ${params.NOT_SET}\" }\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp) (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"null-as-expected" %) shs))))))
+
+(deftest blueocean-style-conditional-buildPlugin-runs
+  (testing "blueocean's Jenkinsfile: `if (JENKINS_URL == X) buildPlugin(…); return`
+            — exercises BOTH new behaviors at once. Used to throw
+            MissingPropertyException on the bare JENKINS_URL identifier"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}
+                          :anvil-url "http://localhost:8765/"})
+          src (str "if (JENKINS_URL == 'http://localhost:8765/') {\n"
+                   "  buildPlugin(configurations: [[platform: 'linux', jdk: 21]])\n"
+                   "  return\n"
+                   "}\n"
+                   "buildPlugin()\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [bp (filter (fn [[k v]] (and (= :jenkins/shared-lib-unresolved k)
+                                        (= "buildPlugin" (:name v))))
+                       (effects dsp))]
+        (is (= 1 (count bp))
+            "should record exactly one buildPlugin call (the if branch ran, then return)")))))

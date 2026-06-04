@@ -192,6 +192,104 @@
       (is (= :jenkins/sh (:type sh-step)))
       (is (= "launchable record" (:script sh-step))))))
 
+;; ---------------------------------------------------------------------------
+;; Wild-corpus follow-up tests
+;; ---------------------------------------------------------------------------
+
+(deftest echo-binary-expression-routes-through-script
+  (testing "echo \"X \" + env.Y emits a :jenkins/script step, not an :echo
+            with an AST .toString() dump"
+    (let [src (str "pipeline {\n"
+                   "  agent any\n"
+                   "  stages {\n"
+                   "    stage('S') {\n"
+                   "      steps {\n"
+                   "        echo \"Building branch \" + env.BRANCH_NAME\n"
+                   "      }\n"
+                   "    }\n"
+                   "  }\n"
+                   "}")
+          ir (t/parse src "Jenkinsfile")
+          steps (-> ir :stages first :steps)]
+      (is (= 1 (count steps)))
+      (let [s (first steps)]
+        (is (= :jenkins/script (:type s))
+            (str "expected :jenkins/script — got " (pr-str s)))
+        (is (re-find #"env\.BRANCH_NAME" (:body-source s))
+            "the source region carries the original expression")
+        (is (not (re-find #"BinaryExpression" (:body-source s)))
+            "no AST .toString() dump in the body source")))))
+
+(deftest preamble-handles-triple-quoted-heredocs
+  (testing "yaml \"\"\"...\"\"\" inside pipeline {} doesn't trip the brace
+            balancer (mojarra has a kubernetes podTemplate yaml block;
+            without triple-quote awareness the `{` chars inside the
+            yaml terminated the outer pipeline {} early and the
+            preamble accidentally carried `post {...}` declarative
+            blocks which then failed script-block compilation)"
+    (let [src (str "boolean isReleaseBuild() { return false }\n"
+                   "pipeline {\n"
+                   "  agent {\n"
+                   "    kubernetes {\n"
+                   "      yaml \"\"\"\n"
+                   "apiVersion: v1\n"
+                   "kind: Pod\n"
+                   "spec: { containers: [{ name: jnlp, image: foo }] }\n"
+                   "\"\"\"\n"
+                   "    }\n"
+                   "  }\n"
+                   "  stages {\n"
+                   "    stage('S') {\n"
+                   "      steps {\n"
+                   "        script { if (isReleaseBuild()) { echo 'go' } }\n"
+                   "      }\n"
+                   "    }\n"
+                   "  }\n"
+                   "  post {\n"
+                   "    success { echo 'OK' }\n"
+                   "  }\n"
+                   "}\n")
+          ir (t/parse src "Jenkinsfile")
+          script-step (->> (:stages ir) first :steps
+                           (filter #(= :jenkins/script (:type %)))
+                           first)]
+      (is (some? script-step))
+      (is (re-find #"boolean isReleaseBuild" (:preamble script-step))
+          "preamble carries top-level fn")
+      (is (not (re-find #"(?m)^\s*post\s*\{" (:preamble script-step)))
+          "preamble does NOT carry the post {} block — that's still inside pipeline {}")
+      (is (not (re-find #"(?m)^\s*stage\s*\(" (:preamble script-step)))
+          "preamble does NOT carry stage() — that's inside pipeline {}"))))
+
+(deftest script-block-carries-jenkinsfile-preamble
+  (testing "top-level def fn() outside pipeline{} threads to script-block IR
+            so calls inside script blocks resolve at runtime"
+    (let [src (str "boolean isDeployedBranch() { return true }\n"
+                   "pipeline {\n"
+                   "  agent any\n"
+                   "  stages {\n"
+                   "    stage('S') {\n"
+                   "      steps {\n"
+                   "        script { if (isDeployedBranch()) { echo 'go' } }\n"
+                   "      }\n"
+                   "    }\n"
+                   "  }\n"
+                   "}\n"
+                   "def mavenBuild(jdk, args) { echo 'mvn' }")
+          ir (t/parse src "Jenkinsfile")
+          script-step (->> (:stages ir) first :steps
+                           (filter #(= :jenkins/script (:type %)))
+                           first)]
+      (is (some? script-step) "should have a script step")
+      (is (string? (:preamble script-step))
+          ":preamble should be attached")
+      (is (re-find #"boolean isDeployedBranch" (:preamble script-step))
+          "preamble carries the top-level boolean fn")
+      (is (re-find #"def mavenBuild" (:preamble script-step))
+          "preamble carries the top-level def fn")
+      (is (not (re-find #"pipeline\s*\{" (:preamble script-step)))
+          "preamble strips the pipeline {} block"))))
+
 (deftest jenkins-self-jenkinsfile-test
   (testing "the actual jenkinsci/jenkins Jenkinsfile yields >=4 scripted stages"
     (let [path "/home/srikanth/projects/jenkins/Jenkinsfile"]

@@ -56,12 +56,20 @@
 
 (defn register-job!
   "Register a job. Idempotent — re-registering replaces the source
-   string but preserves the build history."
-  [{:keys [name jenkinsfile-source buildable? max-concurrent-builds]
+   string but preserves the build history.
+
+   `:scm` is optional — `{:type :git :url ... :branch ...}`. When set,
+   the runner will `git clone --depth 1 --branch X` the URL into the
+   workspace before the first sh step. Without it, the workspace stays
+   empty (current behavior) — Jenkinsfiles whose `sh` steps don't
+   reference workspace files still work."
+  [{:keys [name jenkinsfile-source buildable? max-concurrent-builds scm]
     :or {buildable? true max-concurrent-builds 1}
     :as args}]
   (assert (string? name) "name must be string")
   (assert (string? jenkinsfile-source) "jenkinsfile-source must be string")
+  (when scm
+    (assert (string? (:url scm)) "scm.url must be string"))
   (swap! state update-in [:jobs name]
          (fn [existing]
            (merge {:name name
@@ -79,7 +87,8 @@
                   ;; (Codex P2, PR #164).
                   {:jenkinsfile-source jenkinsfile-source
                    :buildable? buildable?
-                   :max-concurrent-builds max-concurrent-builds}
+                   :max-concurrent-builds max-concurrent-builds
+                   :scm scm}
                   {:name name})))
   (when (persistence?) (persist/upsert-job! args))
   nil)

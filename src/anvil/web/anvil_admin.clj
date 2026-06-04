@@ -56,6 +56,22 @@
       (if (and n (pos? n)) n :invalid))
     :else :invalid))
 
+(defn- coerce-scm
+  "Pull `\"scm\": {\"type\":\"git\",\"url\":...,\"branch\":...}` out of the
+   request body. Returns nil if absent (job has no SCM — current behavior),
+   the parsed map if valid, or `:invalid` with a reason string for the
+   caller to surface as a 400."
+  [scm-body]
+  (cond
+    (nil? scm-body) nil
+    (not (map? scm-body)) [:invalid "scm must be an object"]
+    (not (string? (get scm-body "url")))
+    [:invalid "scm.url (string) is required"]
+    :else
+    {:type   (keyword (or (get scm-body "type") "git"))
+     :url    (get scm-body "url")
+     :branch (or (get scm-body "branch") "main")}))
+
 (defn register-job [req]
   (let [body (read-json-body req)
         nm (get body "name")
@@ -66,7 +82,8 @@
         max-conc (cond
                    (nil? coerced)        1            ; field absent
                    (= :invalid coerced)  :invalid     ; bubbles to cond
-                   :else                 coerced)]
+                   :else                 coerced)
+        scm (coerce-scm (get body "scm"))]
     (cond
       (not (string? nm))
       (json-response {"error" "name (string) is required"} 400)
@@ -78,12 +95,16 @@
       (json-response {"error" (str "max_concurrent_builds must be a positive integer "
                                    "(got " (pr-str raw-cap) ")")} 400)
 
+      (and (vector? scm) (= :invalid (first scm)))
+      (json-response {"error" (second scm)} 400)
+
       :else
       (do (jobs/register-job!
-           {:name nm
-            :jenkinsfile-source src
-            :buildable? buildable?
-            :max-concurrent-builds max-conc})
+           (cond-> {:name nm
+                    :jenkinsfile-source src
+                    :buildable? buildable?
+                    :max-concurrent-builds max-conc}
+             scm (assoc :scm scm)))
           (json-response {"status" "ok"
                           "name" nm
                           "url" (str "/jobs/" nm)

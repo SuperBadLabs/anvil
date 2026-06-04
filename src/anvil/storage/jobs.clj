@@ -31,13 +31,20 @@
 
 (defn- job-row->map [row]
   (when row
-    {:name                  (:anvil_jobs/name row)
-     :jenkinsfile-source    (:anvil_jobs/jenkinsfile_source row)
-     :buildable?            (int->bool (:anvil_jobs/buildable row))
-     :color                 (keyword (:anvil_jobs/color row))
-     :last-build            (:anvil_jobs/last_build row)
-     :last-successful-build (:anvil_jobs/last_successful_build row)
-     :last-failed-build     (:anvil_jobs/last_failed_build row)}))
+    (cond-> {:name                  (:anvil_jobs/name row)
+             :jenkinsfile-source    (:anvil_jobs/jenkinsfile_source row)
+             :buildable?            (int->bool (:anvil_jobs/buildable row))
+             :color                 (keyword (:anvil_jobs/color row))
+             :last-build            (:anvil_jobs/last_build row)
+             :last-successful-build (:anvil_jobs/last_successful_build row)
+             :last-failed-build     (:anvil_jobs/last_failed_build row)}
+      ;; Migration 008: SCM columns are NULL on legacy rows. Only attach
+      ;; the :scm sub-map when both URL is present — that's the contract
+      ;; the runner checks before attempting a clone.
+      (and (:anvil_jobs/scm_url row) (seq (:anvil_jobs/scm_url row)))
+      (assoc :scm {:type   (or (some-> (:anvil_jobs/scm_type row) keyword) :git)
+                   :url    (:anvil_jobs/scm_url row)
+                   :branch (or (:anvil_jobs/scm_branch row) "main")}))))
 
 (defn- build-row->map [row]
   (when row
@@ -65,19 +72,29 @@
   "Insert-or-replace a job row. Preserves last-* counters when an
    existing row's are non-nil and the caller doesn't supply replacements
    (so updating just the jenkinsfile-source doesn't clobber build
-   history)."
-  [{:keys [name jenkinsfile-source buildable?]
+   history).
+
+   `:scm` is optional — `{:type :git :url ... :branch ...}`. When
+   supplied, the runner auto-checks-out the repo into the workspace
+   before the first sh step (migration 008)."
+  [{:keys [name jenkinsfile-source buildable? scm]
     :or {buildable? true}}]
-  (let [ds (db/datasource)]
+  (let [ds (db/datasource)
+        scm-type   (some-> scm :type clojure.core/name)
+        scm-url    (:url scm)
+        scm-branch (:branch scm)]
     (jdbc/execute-one!
      ds
-     ["INSERT INTO anvil_jobs (name, jenkinsfile_source, buildable, updated_at)
-       VALUES (?, ?, ?, datetime('now'))
+     ["INSERT INTO anvil_jobs (name, jenkinsfile_source, buildable, scm_type, scm_url, scm_branch, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(name) DO UPDATE SET
          jenkinsfile_source = excluded.jenkinsfile_source,
          buildable = excluded.buildable,
+         scm_type = excluded.scm_type,
+         scm_url = excluded.scm_url,
+         scm_branch = excluded.scm_branch,
          updated_at = datetime('now')"
-      name jenkinsfile-source (bool->int buildable?)])
+      name jenkinsfile-source (bool->int buildable?) scm-type scm-url scm-branch])
     nil))
 
 (defn find-job [name]
