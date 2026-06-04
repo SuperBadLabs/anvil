@@ -680,9 +680,14 @@
 (defn- inject-credentials-into-env
   "Walk the parsed credentials list, look each up in the store, and
    build a {env-var → value} map for the wrapped block. Returns
-   [env-additions, masked-values]:
+   [env-additions, masked-values, unresolved-ids]:
      - env-additions: {STRING STRING} to merge into ctx :env
-     - masked-values: #{STRING} of resolved secret values for masking.
+     - masked-values: #{STRING} of resolved secret values for masking
+     - unresolved-ids: [STRING ...] credential ids declared in the
+       Jenkinsfile that the store did not resolve. The caller emits
+       [:credential-unresolved …] effects for each — the AN4-1 +
+       AN4-3 classifier reads those as :credential-unresolved →
+       :failure (AN4-4).
 
    String credentials bind one variable. usernamePassword credentials
    bind both usernameVariable + passwordVariable to the respective
@@ -691,17 +696,30 @@
    console log doesn't leak either."
   [creds]
   (reduce
-   (fn [[env masks] cred]
+   (fn [[env masks unresolved] cred]
      (let [raw (str (or (:raw-args cred) (:raw-text cred) ""))
            id-match (re-find #"credentialsId\s*[:= ]\s*['\"]([^'\"]+)['\"]" raw)
            credential-id (some-> id-match second)
            vars (credential-var-bindings raw)
            looked-up (when credential-id (resolve-credential-from-store credential-id))
            value (:value looked-up)
+           ;; Treat a blank/empty-string :value as unresolved — anvil's
+           ;; credentials store allows empty values (PR-review point on
+           ;; AN4-4), and silently binding a blank to the env var is
+           ;; exactly the v0.3 regression this PR exists to fix.
+           usable-value? (and (string? value)
+                              (not (str/blank? value)))
            is-up? (= :username-password (:type looked-up))]
        (cond
+         ;; A credentialsId was declared but the store didn't resolve it
+         ;; to a usable value (missing OR present-but-blank OR store
+         ;; uninitialized). AN4-4: surface this so the build fails
+         ;; honestly instead of silently binding "".
+         (and credential-id (not usable-value?))
+         [env masks (conj unresolved credential-id)]
+
          (not (and credential-id value))
-         [env masks]
+         [env masks unresolved]
 
          ;; usernamePassword: split `user:pass`, bind each half + the combined
          is-up?
@@ -716,25 +734,28 @@
                           u     (conj u)
                           p     (conj p)
                           value (conj value))]
-             [env' masks'])
+             [env' masks' unresolved])
            ;; Stored value without `:` — fall back to binding the whole value
            ;; to whichever var is present, plus masking it.
            (let [var-name (or (:string vars) (:username vars) (:password vars))]
              [(cond-> env var-name (assoc var-name value))
-              (conj masks value)]))
+              (conj masks value)
+              unresolved]))
 
          ;; string credentials: one variable
          :else
          (let [var-name (or (:string vars) (:username vars))]
            [(cond-> env var-name (assoc var-name value))
-            (conj masks value)]))))
-   [{} #{}]
+            (conj masks value)
+            unresolved]))))
+   [{} #{} []]
    (or creds [])))
 
 (defn- h-with-credentials [this step ctx]
   (let [creds (:credentials step)
         body (or (:body step) [])
-        [env-additions resolved-secrets] (inject-credentials-into-env creds)
+        [env-additions resolved-secrets unresolved-ids]
+        (inject-credentials-into-env creds)
         approx-secrets (credential-secrets creds)
         added-secrets (into approx-secrets resolved-secrets)
         old-secrets @(:secrets this)
@@ -744,7 +765,27 @@
     (log-effect this [:with-credentials/enter
                       {:count (count creds)
                        :secret-count (count added-secrets)
-                       :resolved-from-store (count env-additions)}])
+                       :resolved-from-store (count env-additions)
+                       :unresolved-count (count unresolved-ids)}])
+    ;; AN4-4: emit one :credential-unresolved effect per credentialId that
+    ;; the store didn't resolve. The AN4-3 classifier extension reads
+    ;; this as :credential-unresolved → :failure. No more silent bind-
+    ;; to-empty-string.
+    (doseq [cid unresolved-ids]
+      (log-effect this [:credential-unresolved
+                        {:credential-id cid
+                         :rule :credential-unresolved
+                         ;; The store may be uninitialized (test path /
+                         ;; missing config), genuinely missing the id, or
+                         ;; have it but with a blank value. We can't tell
+                         ;; them apart from inject-credentials-into-env's
+                         ;; nil-or-record return today, so the explain
+                         ;; speaks to the *outcome*, not the cause.
+                         :explain (str "credential '" cid
+                                       "' did not resolve to a usable"
+                                       " value (store may be missing the"
+                                       " id, store may not be configured,"
+                                       " or the stored value is blank)")}]))
     (reset! (:secrets this) new-secrets)
     (let [after (run-body this body (assoc ctx :env new-env))]
       (log-effect this [:with-credentials/leave])

@@ -43,7 +43,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest with-credentials-records-test
-  (testing "withCredentials emits enter/leave and adds an entry to secrets"
+  (testing "withCredentials emits enter, a :credential-unresolved for
+            the unresolved id (AN4-4 — no live store in test fixture),
+            the body's sh, then leave"
     (let [{:keys [effects]}
           (run-jenkinsfile
            "pipeline { agent any; stages { stage('S') { steps {
@@ -54,7 +56,10 @@
               }
             } } } }")]
       (let [types (mapv first effects)]
-        (is (= [:with-credentials/enter :sh :with-credentials/leave] types))))))
+        (is (= [:with-credentials/enter :credential-unresolved
+                :sh :with-credentials/leave] types)
+            "the :credential-unresolved between enter and body is the
+             AN4-4 contract — no silent bind-to-empty-string")))))
 
 (deftest credential-masking-redacts-from-logs-test
   (testing "secret strings are replaced with **** in subsequent effects"
