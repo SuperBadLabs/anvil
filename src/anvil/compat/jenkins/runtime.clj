@@ -25,7 +25,8 @@
         so methodMissing fires for the bare names (sh, dir, …) and
         trailing-closure syntax reaches it."
   (:require [anvil.compat.jenkins.groovy :as g]
-            [chengis.engine.dispatcher :as d])
+            [chengis.engine.dispatcher :as d]
+            [chengis.tools :as tools])
   (:import [groovy.lang GroovyShell GroovyClassLoader Binding Closure]
            [groovy.util Expando]
            [org.codehaus.groovy.control CompilerConfiguration]))
@@ -297,7 +298,31 @@
      "__password"                (g/clojure-fn->groovy-closure (fn [& _] nil))
      "__credentials"             (g/clojure-fn->groovy-closure (fn [& _] nil))
      "__file"                    (g/clojure-fn->groovy-closure (fn [& _] nil))
-     "__tool"                    (g/clojure-fn->groovy-closure (fn [& _] ""))
+     ;; AN4-3: route tool('descriptor') through chengis.tools/resolve!.
+     ;; On :ok return the real path. On :unresolved record a
+     ;; [:tool-unresolved {…}] effect so the AN4-1 classifier reclassifies
+     ;; the build as :failure (rule :tool-unresolved) instead of letting
+     ;; an empty JAVA_HOME silently succeed downstream. The fallback "" is
+     ;; preserved as the return value to keep v0.3-shape callers
+     ;; (`def jdk = tool('jdk_17_latest'); env.JAVA_HOME = jdk`) from
+     ;; throwing — the unresolved effect alone makes the build fail.
+     "__tool"                    (g/clojure-fn->groovy-closure
+                                  (fn [& args]
+                                    (let [desc (some-> args first str)
+                                          r (when desc (tools/resolve! desc))]
+                                      (cond
+                                        (and r (= :ok (:result r)))
+                                        (:path r)
+
+                                        (and r (= :unresolved (:result r)))
+                                        (do (swap! (:effects dispatcher) conj
+                                                   [:tool-unresolved
+                                                    {:descriptor (or (:descriptor r) desc)
+                                                     :rule (:rule r)
+                                                     :explain (:explain r)}])
+                                            "")
+
+                                        :else ""))))
      "__properties"              (g/clojure-fn->groovy-closure (fn [& _] nil))
      "__withEnv"                 (g/clojure-fn->groovy-closure
                                   (fn [_env-list body]

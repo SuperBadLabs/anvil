@@ -79,6 +79,12 @@
   (result/record-unsupported-construct
    obs (str "step." (or (some-> name str) "unknown"))))
 
+(defn- record-tool-unresolved-effect [obs [_tag {:keys [descriptor]}]]
+  (result/record-unresolved-tool obs (or descriptor "unknown-tool")))
+
+(defn- record-credential-unresolved-effect [obs [_tag {:keys [credential-id]}]]
+  (result/record-unresolved-credential obs (or credential-id "unknown-credential")))
+
 (defn- record-artifact-effect [obs [tag _]]
   (result/record-effect obs (keyword (str (name tag) "-recorded"))))
 
@@ -105,6 +111,9 @@
          (= :sh tag)              (record-sh-effect obs effect)
          (= :bat tag)             (record-sh-effect obs effect)
          (= :agent/degraded tag)  (record-agent-degraded-effect obs effect)
+         (= :tool-unresolved tag) (record-tool-unresolved-effect obs effect)
+         (= :credential-unresolved tag)
+                                  (record-credential-unresolved-effect obs effect)
          (contains? unsupported-effects tag)
                                   (record-unknown-effect obs effect)
          (contains? artifact-effects tag)
