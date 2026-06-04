@@ -299,30 +299,71 @@
      "__credentials"             (g/clojure-fn->groovy-closure (fn [& _] nil))
      "__file"                    (g/clojure-fn->groovy-closure (fn [& _] nil))
      ;; AN4-3: route tool('descriptor') through chengis.tools/resolve!.
-     ;; On :ok return the real path. On :unresolved record a
-     ;; [:tool-unresolved {…}] effect so the AN4-1 classifier reclassifies
-     ;; the build as :failure (rule :tool-unresolved) instead of letting
-     ;; an empty JAVA_HOME silently succeed downstream. The fallback "" is
-     ;; preserved as the return value to keep v0.3-shape callers
-     ;; (`def jdk = tool('jdk_17_latest'); env.JAVA_HOME = jdk`) from
-     ;; throwing — the unresolved effect alone makes the build fail.
+     ;; On :ok with a non-blank string :path → return that path.
+     ;; On :unresolved, :ok-but-blank-path (a buggy installer), or a
+     ;; non-string/blank descriptor, record [:tool-unresolved {…}] so
+     ;; the AN4-1 classifier reclassifies the build as :failure (rule
+     ;; :tool-unresolved). The fallback "" is preserved as the return
+     ;; value so v0.3-shape callers like
+     ;;   `def jdk = tool('jdk_17_latest'); env.JAVA_HOME = jdk`
+     ;; don't throw — the unresolved effect alone makes the build fail.
+     ;;
+     ;; Input shapes accepted:
+     ;;   tool('descriptor')          — positional CharSequence
+     ;;   tool(name: 'descriptor')    — named-arg LinkedHashMap (we look
+     ;;                                  under :name OR :tool keys)
+     ;; Any other shape (nil, empty string, map without those keys, a
+     ;; non-CharSequence first arg) records :tool-unresolved with
+     ;; rule :bad-descriptor and returns "".
      "__tool"                    (g/clojure-fn->groovy-closure
                                   (fn [& args]
-                                    (let [desc (some-> args first str)
-                                          r (when desc (tools/resolve! desc))]
+                                    (let [first-arg (first args)
+                                          desc
+                                          (cond
+                                            (instance? CharSequence first-arg)
+                                            (str first-arg)
+
+                                            (instance? java.util.Map first-arg)
+                                            (let [m (coerce-map first-arg)]
+                                              (some-> (or (:name m) (:tool m))
+                                                      str))
+
+                                            :else nil)
+                                          desc-non-blank
+                                          (when (and (string? desc)
+                                                     (not (clojure.string/blank? desc)))
+                                            desc)
+                                          r (when desc-non-blank
+                                              (tools/resolve! desc-non-blank))]
                                       (cond
-                                        (and r (= :ok (:result r)))
+                                        ;; Honest :ok with a real path.
+                                        (and r (= :ok (:result r))
+                                             (string? (:path r))
+                                             (not (clojure.string/blank? (:path r))))
                                         (:path r)
 
-                                        (and r (= :unresolved (:result r)))
+                                        ;; Everything else — :unresolved,
+                                        ;; :ok-with-blank-path (defense in
+                                        ;; depth against a buggy installer),
+                                        ;; or a non-usable descriptor.
+                                        :else
                                         (do (swap! (:effects dispatcher) conj
                                                    [:tool-unresolved
-                                                    {:descriptor (or (:descriptor r) desc)
-                                                     :rule (:rule r)
-                                                     :explain (:explain r)}])
-                                            "")
+                                                    {:descriptor (or desc-non-blank
+                                                                     (some-> first-arg pr-str)
+                                                                     "")
+                                                     :rule (cond
+                                                             (nil? desc-non-blank)
+                                                             :bad-descriptor
 
-                                        :else ""))))
+                                                             (and r (= :ok (:result r)))
+                                                             :blank-resolved-path
+
+                                                             :else
+                                                             (or (:rule r) :no-installer))
+                                                     :explain (or (:explain r)
+                                                                  "tool() argument was not a usable descriptor")}])
+                                            "")))))
      "__properties"              (g/clojure-fn->groovy-closure (fn [& _] nil))
      "__withEnv"                 (g/clojure-fn->groovy-closure
                                   (fn [_env-list body]

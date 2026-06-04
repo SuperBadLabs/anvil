@@ -48,32 +48,57 @@
 ;; skip cleanly. Each test seeds its own installer fixture.
 ;; ---------------------------------------------------------------------------
 
-(defn- run-script [dispatcher source]
-  (try
-    (runtime/run-script-block source dispatcher (atom {:env {}}))
-    (catch Throwable t
-      {::error t})))
+(defn- run-script
+  "Run a Groovy script source against `dispatcher` and return the
+   script's final expression value. Throws on real runtime errors —
+   the earlier swallow-all-throwables form let regressions in the
+   Groovy runtime pass these tests silently (Copilot review feedback
+   on PR #27)."
+  [dispatcher source]
+  (runtime/run-script-block source dispatcher (atom {:env {}})))
 
 (deftest tool-with-no-installer-records-unresolved-effect
-  (let [d (ad/make)
-        r (run-script d "def jdk = tool('jdk_17_latest'); echo jdk.toString()")]
-    (when-not (::error r)
-      (let [ts (filter #(= :tool-unresolved (first %)) @(:effects d))]
-        (is (= 1 (count ts))
-            "tool() with no installer must record one :tool-unresolved effect")
-        (is (= "jdk_17_latest"
-               (get-in (second (first ts)) [:descriptor])))))))
+  (let [d (ad/make)]
+    (run-script d "def jdk = tool('jdk_17_latest'); echo jdk.toString()")
+    (let [ts (filter #(= :tool-unresolved (first %)) @(:effects d))]
+      (is (= 1 (count ts))
+          "tool() with no installer must record one :tool-unresolved effect")
+      (is (= "jdk_17_latest"
+             (get-in (second (first ts)) [:descriptor]))))))
 
 (deftest tool-with-resolving-installer-returns-real-path
+  (let [d (ad/make)
+        ;; A directory we know exists, so DirPinned resolves to it.
+        pin-path (System/getProperty "java.io.tmpdir")]
+    (tools/register-installer!
+     (tools/dir-pinned-installer
+      {:pins {[:jdk "17"] pin-path}}))
+    ;; Capture the script's final expression so we can assert tool()
+    ;; actually returned the resolved path (Copilot review on PR #27).
+    (let [returned (run-script
+                    d "def p = tool('jdk_17_latest'); p")
+          ts (filter #(= :tool-unresolved (first %)) @(:effects d))]
+      (is (= pin-path (str returned))
+          "tool() must return the resolved path on :ok")
+      (is (empty? ts)
+          "resolved tool() must NOT record an :tool-unresolved effect"))))
+
+(deftest tool-with-blank-descriptor-records-bad-descriptor
+  (let [d (ad/make)]
+    (run-script d "tool('')")
+    (let [ts (filter #(= :tool-unresolved (first %)) @(:effects d))]
+      (is (= 1 (count ts)))
+      (is (= :bad-descriptor (get-in (second (first ts)) [:rule]))
+          "empty-string descriptor must NOT trigger tools/resolve!"))))
+
+(deftest tool-with-named-arg-style-still-resolves
   (let [d (ad/make)]
     (tools/register-installer!
      (tools/dir-pinned-installer
       {:pins {[:jdk "17"] (System/getProperty "java.io.tmpdir")}}))
-    (let [r (run-script d "echo tool('jdk_17_latest')")]
-      (when-not (::error r)
-        (let [ts (filter #(= :tool-unresolved (first %)) @(:effects d))]
-          (is (empty? ts)
-              "resolved tool() must NOT record an :tool-unresolved effect"))))))
+    (let [returned (run-script d "tool(name: 'jdk_17_latest')")]
+      (is (= (System/getProperty "java.io.tmpdir") (str returned))
+          "tool(name: '...') must resolve through the same path"))))
 
 (deftest unresolved-tool-end-to-end-classifies-as-failure
   (testing "anvil v0.3 returned \"\" silently and built was SUCCESS;
