@@ -100,15 +100,22 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- result->jenkins
-  "anvil result keyword → Jenkins build result string"
+  "anvil result keyword → Jenkins build result string. AN4-1 added two
+   new honest result classes; Jenkins doesn't natively have :neutral or
+   :unsupported, so we map them to NOT_BUILT — the Jenkins-canonical
+   way to say 'this build did not produce its expected output'. The
+   classifier rule + explain still live on the build record for the
+   anvil-native UI to render verbatim."
   [r]
   (case r
-    :success  "SUCCESS"
-    :failure  "FAILURE"
-    :aborted  "ABORTED"
-    :unstable "UNSTABLE"
-    :running  nil
-    nil       nil))
+    :success     "SUCCESS"
+    :failure     "FAILURE"
+    :aborted     "ABORTED"
+    :unstable    "UNSTABLE"
+    :neutral     "NOT_BUILT"
+    :unsupported "NOT_BUILT"
+    :running     nil
+    nil          nil))
 
 (defn build-summary
   "GET /jenkins/job/<name>/<n>/api/json"
