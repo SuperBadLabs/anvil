@@ -703,12 +703,19 @@
            vars (credential-var-bindings raw)
            looked-up (when credential-id (resolve-credential-from-store credential-id))
            value (:value looked-up)
+           ;; Treat a blank/empty-string :value as unresolved — anvil's
+           ;; credentials store allows empty values (PR-review point on
+           ;; AN4-4), and silently binding a blank to the env var is
+           ;; exactly the v0.3 regression this PR exists to fix.
+           usable-value? (and (string? value)
+                              (not (str/blank? value)))
            is-up? (= :username-password (:type looked-up))]
        (cond
          ;; A credentialsId was declared but the store didn't resolve it
-         ;; — or resolved without a usable :value. AN4-4: surface this so
-         ;; the build fails honestly instead of silently binding "".
-         (and credential-id (not value))
+         ;; to a usable value (missing OR present-but-blank OR store
+         ;; uninitialized). AN4-4: surface this so the build fails
+         ;; honestly instead of silently binding "".
+         (and credential-id (not usable-value?))
          [env masks (conj unresolved credential-id)]
 
          (not (and credential-id value))
@@ -768,8 +775,17 @@
       (log-effect this [:credential-unresolved
                         {:credential-id cid
                          :rule :credential-unresolved
+                         ;; The store may be uninitialized (test path /
+                         ;; missing config), genuinely missing the id, or
+                         ;; have it but with a blank value. We can't tell
+                         ;; them apart from inject-credentials-into-env's
+                         ;; nil-or-record return today, so the explain
+                         ;; speaks to the *outcome*, not the cause.
                          :explain (str "credential '" cid
-                                       "' not found in store")}]))
+                                       "' did not resolve to a usable"
+                                       " value (store may be missing the"
+                                       " id, store may not be configured,"
+                                       " or the stored value is blank)")}]))
     (reset! (:secrets this) new-secrets)
     (let [after (run-body this body (assoc ctx :env new-env))]
       (log-effect this [:with-credentials/leave])

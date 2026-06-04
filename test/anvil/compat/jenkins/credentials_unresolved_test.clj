@@ -104,6 +104,24 @@
     (d/dispatch d step {})
     (is (empty? (credential-unresolved-effects d)))))
 
+(deftest with-credentials-blank-value-also-classifies-unresolved
+  (testing "Even when the store resolves the id, a blank/empty :value
+            must be treated as unresolved — PR-review point on AN4-4.
+            anvil's store allows empty values; silently binding a blank
+            to the env var is the v0.3 regression this PR exists to fix."
+    (let [resolved (atom {"BLANK" {:value "" :type :string}})
+          d (ad/make)
+          step {:type :jenkins/with-credentials
+                :credentials [{:raw-args "credentialsId: 'BLANK', variable: 'T'"}]
+                :body []}]
+      (with-redefs [anvil.compat.jenkins.dispatcher/resolve-credential-from-store
+                    (fn [id] (get @resolved id))]
+        (d/dispatch d step {})
+        (is (= 1 (count (credential-unresolved-effects d)))
+            "blank :value must be honest-fail, not silent-bind")
+        (is (= "BLANK" (-> (credential-unresolved-effects d) first
+                            second :credential-id)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Wild-corpus shape: gpg-key flow
 ;; ---------------------------------------------------------------------------
