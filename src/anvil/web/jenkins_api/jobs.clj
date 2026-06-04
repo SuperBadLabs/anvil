@@ -273,12 +273,18 @@
 
 (defn record-build-end!
   "Mark a build complete. `result` is one of :success / :failure /
-   :aborted / :unstable. Updates the job's color + last-* fields.
+   :aborted / :unstable / :neutral / :unsupported. Updates the job's
+   color + last-* fields.
+
+   `:classify-rule` and `:classify-explain` (from AN4-1's classifier)
+   are stored on the build record so the build page UI can show the
+   operator WHY a build wasn't green (the AN4-5 receipt).
 
    In streaming mode, `:log-path` points at the on-disk log file; the
    in-memory `:console-log` is augmented with the file contents on read.
    In buffered mode, `:console-log` is the full rendered string."
-  [job-name build-number {:keys [result effects log-path]
+  [job-name build-number {:keys [result effects log-path
+                                 classify-rule classify-explain]
                           :or {result :success effects []}}]
   (let [console-log-atom (atom nil)
         dur-atom (atom nil)]
@@ -296,7 +302,9 @@
                                       :duration-ms dur
                                       :effects effects
                                       :console-log console
-                                      :log-path log-path)
+                                      :log-path log-path
+                                      :classify-rule classify-rule
+                                      :classify-explain classify-explain)
                    color (result->color result false)]
                (reset! console-log-atom console)
                (reset! dur-atom dur)
