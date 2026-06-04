@@ -851,9 +851,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- h-script [this step ctx]
-  (let [ctx-atom (atom ctx)]
+  (let [ctx-atom (atom ctx)
+        ;; Prepend Jenkinsfile top-level fn defs (extracted by the
+        ;; translator) so calls like `isDeployedBranch()` or
+        ;; `mavenBuild(...)` defined OUTSIDE `pipeline { ... }` are
+        ;; visible to script-block compilation. Without :preamble (old
+        ;; IR or scripted-pipeline source), use just the body source —
+        ;; backward compat.
+        full-source (str (or (:preamble step) "") "\n" (:body-source step))]
     (try
-      (let [_result (runtime/run-script-block (:body-source step) this ctx-atom)]
+      (let [_result (runtime/run-script-block full-source this ctx-atom)]
         (ok @ctx-atom :output "[script block]"))
       (catch Exception e
         (log-effect this [:script-failed (.getMessage e)])

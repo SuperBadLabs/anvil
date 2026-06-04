@@ -350,6 +350,22 @@
 ;; DSL globals — currentBuild, pullRequest, infra
 ;; ---------------------------------------------------------------------------
 
+(defn- make-params
+  "Expose Jenkins's `params.X` binding — an immutable map of build
+   parameter values. Real Jenkins makes both `params.SOMETHING` and
+   `params['SOMETHING']` work; the Groovy Expando accommodates both
+   because property access falls through to setProperty lookup.
+
+   When the build was triggered without parameters, `params.X` returns
+   null (same as Jenkins). When triggered with parameters via the
+   /build/parameters API or the UI form, ctx :parameters carries the
+   String → String map and we seed the Expando with it."
+  [params-map]
+  (let [e (Expando.)]
+    (doseq [[k v] (or params-map {})]
+      (.setProperty e (name k) (if (nil? v) nil (str v))))
+    e))
+
 (defn- make-currentBuild []
   (doto (Expando.)
     (.setProperty "result" "SUCCESS")
@@ -535,6 +551,7 @@
       ;; binding, not methodMissing routes)
       "currentBuild"     (make-currentBuild)
       "pullRequest"      (make-pullRequest)
+      "params"           (make-params (:parameters @ctx-atom))
       "infra"            (make-infra dispatcher ctx-atom)
       ;; checkout scm — `scm` is a placeholder global; checkout is a
       ;; method recorded as a leaf via base bindings.

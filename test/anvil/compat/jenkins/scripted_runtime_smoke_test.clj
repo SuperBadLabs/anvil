@@ -111,6 +111,33 @@
         (is (some (fn [[_ v]] (= "buildPlugin" (:name v))) recs)
             "the recorded :name is buildPlugin")))))
 
+(deftest params-binding-exposes-build-parameters
+  (testing "params.X reads build parameters (apache-cassandra was failing on
+            `No such property: params for class: JenkinsDSLScript`)"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {}
+                          :parameters {"SKIP_CI" "false" "GIT_BRANCH" "trunk"}})
+          src (str "def skip = params.SKIP_CI\n"
+                   "def br = params.GIT_BRANCH\n"
+                   "sh \"echo skip=${skip} branch=${br}\"\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp) (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"skip=false" %) shs))
+        (is (some #(re-find #"branch=trunk" %) shs))))))
+
+(deftest params-binding-empty-when-no-parameters
+  (testing "params.X with no parameters returns null (matches Jenkins)
+            — `params.X == null` works in scripted-eval"
+    (let [dsp (ad/make)
+          ctx-atom (atom {:cwd "/workspace" :env {} :parameters {}})
+          src (str "if (params.NOT_SET == null) { sh \"echo null-as-expected\" }\n"
+                   "else { sh \"echo unexpected: ${params.NOT_SET}\" }\n")]
+      (srt/run-scripted-file src dsp ctx-atom)
+      (let [shs (->> (effects dsp) (filter #(= :sh (first %)))
+                     (map #(str (:cmd (second %)))))]
+        (is (some #(re-find #"null-as-expected" %) shs))))))
+
 (deftest blueocean-style-conditional-buildPlugin-runs
   (testing "blueocean's Jenkinsfile: `if (JENKINS_URL == X) buildPlugin(…); return`
             — exercises BOTH new behaviors at once. Used to throw

@@ -12,7 +12,8 @@
    objects in encounter order."
   (:require [clojure.string :as str]
             [anvil.compat.jenkins.groovy :as g]
-            [anvil.compat.jenkins.ir :as ir])
+            [anvil.compat.jenkins.ir :as ir]
+            [anvil.compat.jenkins.jenkinsfile-preamble :as preamble])
   (:import [org.codehaus.groovy.ast ASTNode CodeVisitorSupport GroovyCodeVisitor]
            [org.codehaus.groovy.ast.expr ArgumentListExpression
             ClosureExpression
@@ -167,14 +168,52 @@
     {:type :jenkins/bat :script s}
     (ir/step-unknown "bat" (args->plain (:args call)))))
 
+(defn- source-region
+  "Slice `source` between (line-start, col-start) and (line-end, col-end).
+   Groovy line/col are 1-indexed. Returns nil on missing positions or
+   out-of-range — caller falls back."
+  [source line-start col-start line-end col-end]
+  (when (and source line-start col-start line-end col-end
+             (every? pos? [line-start col-start line-end col-end]))
+    (try
+      (let [lines (str/split-lines source)]
+        (when (<= line-end (count lines))
+          (let [lines-region (subvec (vec lines) (dec line-start) line-end)
+                ;; Multi-line: keep first line from col-start, last line
+                ;; up to col-end, middle lines verbatim. Cols are
+                ;; 1-indexed and inclusive of end.
+                first-line (nth lines-region 0)
+                last-line  (nth lines-region (dec (count lines-region)))
+                trimmed-first (subs first-line (max 0 (dec col-start)))
+                trimmed-last  (subs last-line 0 (min (count last-line) (dec col-end)))]
+            (if (= 1 (count lines-region))
+              (subs first-line (max 0 (dec col-start))
+                    (min (count first-line) (dec col-end)))
+              (str/join "\n"
+                        (concat [trimmed-first]
+                                (when (> (count lines-region) 2)
+                                  (subvec lines-region 1 (dec (count lines-region))))
+                                [trimmed-last]))))))
+      (catch Exception _ nil))))
+
 (defn- translate-echo
-  [call _ _]
+  [call source _]
   (let [a (first (:args call))]
     (case (:type a)
       :const   (ir/step-echo (str (:value a)))
       :gstring (ir/step-echo (:text a))
       :var     (ir/step-echo (str "$" (:name a)))
-      (ir/step-echo (or (:text a) "")))))
+      ;; :other — BinaryExpression, PropertyExpression, etc. Emit a
+      ;; one-step script {} block carrying the original source span so
+      ;; Groovy evaluates `"Building " + env.BRANCH_NAME` against the
+      ;; live binding instead of dumping the AST .toString(). Falls
+      ;; back to the legacy (broken) text dump if we can't recover
+      ;; the source region — same behavior as before for safety.
+      (let [{:keys [line-start line-end col-start col-end text]} a
+            region (source-region source line-start col-start line-end col-end)]
+        (if region
+          (ir/step-script (str "echo " region))
+          (ir/step-echo (or text "")))))))
 
 (defn- translate-junit
   [call _ _]
@@ -268,8 +307,17 @@
         closure-expr (get closure-objs body-closure)
         body-source (if closure-expr
                       (closure-body-source closure-expr source)
-                      "")]
-    (ir/step-script body-source)))
+                      "")
+        ;; Top-level helper-function defs surrounding the pipeline {}
+        ;; block — `boolean isDeployedBranch() { ... }`, `def mavenBuild
+        ;; (jdk, args) { ... }` etc. Wild-corpus found 3+ Jenkinsfiles
+        ;; that crash in `script {}` blocks because Groovy's
+        ;; MissingMethodException fires on the helper before the body
+        ;; runs. Prepending the preamble lets Groovy see the defs at
+        ;; compile time without changing anvil's pipeline semantics.
+        pre (preamble/extract source)]
+    (cond-> (ir/step-script body-source)
+      (and pre (seq pre)) (assoc :preamble pre))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scope wrappers — declarative IR form. Body steps live inside :body, which

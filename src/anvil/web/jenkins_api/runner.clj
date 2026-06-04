@@ -174,7 +174,8 @@
                      :stash-root stash-root   ;; TX11C
                      :log-file log-file
                      :build-number number
-                     :job-name job-name}
+                     :job-name job-name
+                     :parameters (or parameters {})}
                 result (d/run-pipeline flat dispatcher ctx)
                 effects @(:effects dispatcher)
                 build-result (case (:status result)
