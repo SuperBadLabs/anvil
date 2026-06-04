@@ -943,6 +943,33 @@
     (= :none (:type a))       (agent-registry/resolve-label nil)
     :else                     nil))
 
+(defn- unhonored-container-agent-shape
+  "Returns a keyword naming the unhonored agent shape when `:agent step`
+   is a container/cluster shape that this runner cannot actually execute
+   in the current mode, or nil when the agent is honored.
+
+   Today's honor table:
+     mode             | docker        | dockerfile    | kubernetes
+     -----------------+---------------+---------------+-------------
+     :execute? true   | honored       | UNHONORED     | UNHONORED
+     :execute? false  | UNHONORED     | UNHONORED     | UNHONORED
+
+   Rationale: in record-only mode every container agent is bypassed by
+   construction (the dispatcher records shell calls without forking
+   subprocesses). In execute mode, `agent { docker }` runs via
+   `build-docker-args` against the host `docker` CLI — so it's honored.
+   `dockerfile` and `kubernetes` have no runtime in anvil today; emitting
+   `:agent/degraded` for them is the AN4-1-style honesty signal that
+   tells the classifier these were silently skipped."
+  [d agent-spec]
+  (let [execute? (:execute? d)]
+    (cond
+      (and (map? agent-spec) (:dockerfile agent-spec))   :dockerfile
+      (and (map? agent-spec) (= :kubernetes (:type agent-spec))) :kubernetes
+      (and (map? agent-spec) (:docker agent-spec)
+           (not execute?))                                :docker
+      :else nil)))
+
 (defn- h-agent-stage-enter [d step ctx]
   (log-effect d (agent/stage-enter-event (:stage step) (:agent step)))
   ;; Resolve label-based declarative agents through TX11C's registry
@@ -956,6 +983,23 @@
   ;; leave handler can restore it. Pre-fix the leave just dropped
   ;; markers, and a later stage with no resolved env inherited the
   ;; previous label's PATH/JAVA_HOME — tools leaked across stages.
+  ;;
+  ;; AN4-2: emit :agent/degraded for container shapes this runner cannot
+  ;; honor — dockerfile and kubernetes (always), docker (in record-only
+  ;; mode). The AN4-1 classifier consumes these as :unsupported so a
+  ;; build with `agent { dockerfile … }` no longer silently SUCCEEDs.
+  (when-let [unhonored-shape (unhonored-container-agent-shape d (:agent step))]
+    (log-effect d [:agent/degraded
+                   {:requested-agent {:type (name unhonored-shape)
+                                      :stage (:stage step)}
+                    :reason :runtime-unsupported
+                    :explain (str "anvil " (case unhonored-shape
+                                              :docker     "record-only mode"
+                                              :dockerfile "v0.3"
+                                              :kubernetes "v0.3")
+                                  " cannot execute agent { "
+                                  (name unhonored-shape)
+                                  " }; stage body bypassed")}]))
   (let [resolved (resolve-agent (:agent step))
         old-env (:env ctx {})
         merged-env (if resolved (merge old-env (:env resolved)) old-env)
