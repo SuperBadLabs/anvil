@@ -19,12 +19,37 @@
 
 (defn- result-badge [b]
   (cond
-    (:building? b)           [:span.badge.anim "running"]
-    (= :success  (:result b)) [:span.badge.blue "success"]
-    (= :failure  (:result b)) [:span.badge.red  "failure"]
-    (= :unstable (:result b)) [:span.badge.yellow "unstable"]
-    (= :aborted  (:result b)) [:span.badge.gray "aborted"]
-    :else                     [:span.badge.gray "—"]))
+    (:building? b)              [:span.badge.anim "running"]
+    (= :success     (:result b)) [:span.badge.blue "success"]
+    (= :failure     (:result b)) [:span.badge.red  "failure"]
+    (= :unstable    (:result b)) [:span.badge.yellow "unstable"]
+    (= :aborted     (:result b)) [:span.badge.gray "aborted"]
+    ;; AN4 added :neutral and :unsupported as honest result classes.
+    ;; :neutral renders muted (empty walk, did nothing) and
+    ;; :unsupported renders amber (agent/step the runner can't honor).
+    ;; Neither colors red — these are NOT failures, they're
+    ;; capability gaps the operator should see.
+    (= :neutral     (:result b)) [:span.badge.gray "neutral"]
+    (= :unsupported (:result b)) [:span.badge.amber "unsupported"]
+    :else                        [:span.badge.gray "—"]))
+
+(defn- result-explain-banner
+  "AN4-5: when a build is NOT :success, render a short banner with the
+   classifier's :rule and :explain so operators can see at a glance
+   WHY the build was reclassified. Returns nil for green builds."
+  [{:keys [result classify-rule classify-explain]}]
+  (when (and (not= :success result) classify-explain)
+    (let [css-class (case result
+                      :failure     "result-banner result-banner--failure"
+                      :unstable    "result-banner result-banner--unstable"
+                      :aborted     "result-banner result-banner--aborted"
+                      :neutral     "result-banner result-banner--neutral"
+                      :unsupported "result-banner result-banner--unsupported"
+                      "result-banner")]
+      [:div {:class css-class}
+       [:strong (str (name (or result :unknown)) " · "
+                     (some-> classify-rule name))]
+       [:span " — " classify-explain]])))
 
 (defn- step-row [{:keys [cmd exit cwd]}]
   [:tr
@@ -105,6 +130,7 @@
       (layout/page
        {:title (str job-name " #" n) :active :jobs}
        [:h2 job-name " " [:code (str "#" n)] " " (result-badge b)]
+       (result-explain-banner b)
        [:p.muted
         [:a {:href (str "/jobs/" job-name)} (str "← " job-name)]
         " · "

@@ -125,8 +125,23 @@
   .badge.red    { background: var(--err-bg);  color: var(--err); }
   .badge.yellow { background: var(--warn-bg); color: var(--warn); }
   .badge.gray   { background: var(--bg-elevated); color: var(--fg-muted); }
+  /* AN4-5: :unsupported gets amber — not a failure but a capability gap
+     the operator must address. Visually distinct from yellow :unstable. */
+  .badge.amber  { background: #fff4d6; color: #8a5a00; }
   .badge.anim   { background: var(--info-bg); color: var(--info); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
+
+  /* AN4-5: explain banner under the result badge — names the classifier
+     rule and a one-line readable explain. Color-matches the result. */
+  .result-banner { display: block; padding: 0.6em 0.9em; margin: 0.5em 0 1em;
+                   border-radius: var(--radius-1); font-size: 0.9em;
+                   line-height: 1.4; }
+  .result-banner strong { font-family: var(--font-mono); margin-right: 0.4em; }
+  .result-banner--failure    { background: var(--err-bg);   color: var(--err); }
+  .result-banner--unstable   { background: var(--warn-bg);  color: var(--warn); }
+  .result-banner--aborted    { background: var(--bg-elevated); color: var(--fg-muted); }
+  .result-banner--neutral    { background: var(--bg-elevated); color: var(--fg-muted); }
+  .result-banner--unsupported{ background: #fff4d6;        color: #8a5a00; }
 
   /* ── Code blocks ──────────────────────────────────────────────────── */
   code { background: var(--bg-elevated); padding: 0.12em 0.4em; border-radius: 3px; font-size: 0.9em; font-family: var(--font-mono); }
