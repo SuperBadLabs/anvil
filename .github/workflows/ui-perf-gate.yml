@@ -47,23 +47,17 @@ jobs:
           lein: latest
           bb: latest
 
-      - name: Cache Maven + lein deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.m2
-            ~/.lein
-          key: ${{ runner.os }}-uiperf-${{ hashFiles('project.clj') }}
-          restore-keys: |
-            ${{ runner.os }}-uiperf-
+      # No deps cache during the chengis-core 0.2.0-SNAPSHOT cycle —
+      # we always install chengis-core master fresh so anvil sees the
+      # latest SNAPSHOT. Switch back to actions/cache + a pinned tag
+      # (--branch v0.2.0) after CC2-SOAK clears.
 
-      - name: Install chengis-core 0.1.0
+      - name: Install chengis-core from master (v0.2.0-SNAPSHOT cycle)
         run: |
-          if [ ! -d ~/.m2/repository/superbadlabs/chengis-core/0.1.0 ]; then
-            git clone --depth 1 --branch v0.1.0 \
-              https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
-            (cd /tmp/chengis-core && lein install)
-          fi
+          rm -rf /tmp/chengis-core
+          git clone --depth 1 \
+            https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
+          (cd /tmp/chengis-core && lein install)
 
       - name: Start anvil
         run: |
