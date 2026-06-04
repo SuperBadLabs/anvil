@@ -993,13 +993,17 @@
                    {:requested-agent {:type (name unhonored-shape)
                                       :stage (:stage step)}
                     :reason :runtime-unsupported
-                    :explain (str "anvil " (case unhonored-shape
-                                              :docker     "record-only mode"
-                                              :dockerfile "v0.3"
-                                              :kubernetes "v0.3")
-                                  " cannot execute agent { "
-                                  (name unhonored-shape)
-                                  " }; stage body bypassed")}]))
+                    :explain (str "agent { " (name unhonored-shape) " }: "
+                                  (case unhonored-shape
+                                    :docker
+                                    "no container runtime in record-only mode"
+                                    :dockerfile
+                                    "dockerfile agents are not yet implemented"
+                                    :kubernetes
+                                    "kubernetes agents are not yet implemented")
+                                  " — the stage body still dispatches but"
+                                  " its container/cluster requirement is"
+                                  " not honored")}]))
   (let [resolved (resolve-agent (:agent step))
         old-env (:env ctx {})
         merged-env (if resolved (merge old-env (:env resolved)) old-env)

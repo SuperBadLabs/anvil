@@ -107,19 +107,31 @@
                                      @(:effects d) {})]
       (is (= :unsupported (:result c))))))
 
-(deftest docker-stage-with-real-sh-in-execute-mode-classifies-as-success
-  (testing "Without docker actually running (we can't spawn here),
-            the dispatcher still records the :sh effect — and crucially
-            does NOT emit :agent/degraded — so the classifier returns
-            :success based on the recorded effect"
-    (let [d (ad/make {:execute? false})  ; record-only for the test
-          ;; Force execute-mode-style effect: a :sh with :exit 0
-          _ (do (agent-stage-enter d {:docker {:image "x"}})
-                (swap! (:effects d) conj
-                       [:sh {:cmd "make" :cwd "/workspace" :exit 0
-                             :streamed? false :stdout-bytes 0 :stderr-bytes 0}]))]
-      ;; In record-only mode docker IS unhonored — so we expect :unsupported
-      (let [c (classify/classify-build {:status :ok}
-                                       @(:effects d) {})]
-        (is (= :unsupported (:result c))
-            "record-only docker stage must be honest about silent skip")))))
+(deftest record-only-docker-stage-classifies-as-unsupported-even-with-recorded-sh
+  ;; Record-only mode: docker is unhonored, so the recorded :sh effect
+  ;; doesn't redeem the build — :unsupported still wins on rule
+  ;; precedence (unsupported-construct precedes step-nonzero-exit /
+  ;; default-success). The PR-review notes a previous version of this
+  ;; test named it "execute-mode" while the body used :execute? false;
+  ;; this is the renamed honest test, paired with its inverse below.
+  (let [d (ad/make {:execute? false})]
+    (agent-stage-enter d {:docker {:image "x"}})
+    (swap! (:effects d) conj
+           [:sh {:cmd "make" :cwd "/workspace" :exit 0
+                 :streamed? false :stdout-bytes 0 :stderr-bytes 0}])
+    (let [c (classify/classify-build {:status :ok} @(:effects d) {})]
+      (is (= :unsupported (:result c))
+          "record-only docker stage must be honest about silent skip"))))
+
+(deftest execute-mode-docker-stage-with-recorded-sh-classifies-as-success
+  ;; The honest execute-mode inverse: docker IS honored, no
+  ;; :agent/degraded is emitted, the recorded :sh drives :success.
+  (let [d (ad/make {:execute? true})]
+    (agent-stage-enter d {:docker {:image "x"}})
+    (swap! (:effects d) conj
+           [:sh {:cmd "make" :cwd "/workspace" :exit 0
+                 :streamed? false :stdout-bytes 0 :stderr-bytes 0}])
+    (is (empty? (degraded-effects d))
+        ":execute? true docker agent must NOT emit :agent/degraded")
+    (let [c (classify/classify-build {:status :ok} @(:effects d) {})]
+      (is (= :success (:result c))))))
