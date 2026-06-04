@@ -14,6 +14,7 @@
   (:require [clojure.java.io :as io]
             [taoensso.timbre :as log]
             [chengis.engine.dispatcher :as d]
+            [anvil.compat.jenkins.classification :as classify]
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.matrix-expander :as mx]
             [anvil.compat.jenkins.dispatcher :as ad]
@@ -178,16 +179,30 @@
                      :parameters (or parameters {})}
                 result (d/run-pipeline flat dispatcher ctx)
                 effects @(:effects dispatcher)
-                build-result (case (:status result)
-                               :ok :success
-                               :failed :failure
-                               :success)]
+                ;; CC2-EX2 wire-up (AN4-1): instead of the lossy
+                ;;   (case status :ok :success :failed :failure :success)
+                ;; — which classified an empty walk as success simply
+                ;; because nothing threw — fold the effects into a
+                ;; chengis.engine.result observation and ask the honest
+                ;; classifier. Empty-walk builds reclassify as :neutral;
+                ;; silently-skipped docker/k8s agents reclassify as
+                ;; :unsupported; non-zero shell exits as :failure.
+                classified (classify/classify-build result effects {})
+                build-result (:result classified)
+                _ (log/info (str "anvil.classify: " job-name " #" number
+                                 " → " build-result
+                                 " (rule=" (:rule classified) ") "
+                                 (:explain classified)))]
             (jobs/record-build-end! job-name number
                                     {:result build-result
                                      :effects effects
-                                     :log-path log-path})
+                                     :log-path log-path
+                                     :classify-rule (:rule classified)
+                                     :classify-explain (:explain classified)})
             {:build-number number
              :result build-result
+             :rule (:rule classified)
+             :explain (:explain classified)
              :effect-count (count effects)
              :workspace workspace-path
              :log-path log-path})
