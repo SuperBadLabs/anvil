@@ -11,12 +11,34 @@
 [![secrets](https://img.shields.io/badge/secrets-AES--256--GCM-brightgreen)](docs/secrets/)
 [![mise](https://img.shields.io/badge/mise%2Fasdf-auto-brightgreen)](docs/tools/)
 
-A free, open-source CI server that runs your existing Jenkinsfile —
-unchanged — on a modern engine.
+A free, open-source CI server that **parses any Jenkinsfile** and
+**executes the supported subset** on a modern engine. The supported
+subset matrix is the source of truth at
+[`docs/brasstacks/capability.md`](docs/brasstacks/capability.md).
+**Industrial-strength executor parity is a roadmap commitment**, not a
+shipped feature — see [Operation Brasstacks](docs/brasstacks/board.md).
 
-> **Receipt:** anvil **v0.3.0** built `cli-2.568-SNAPSHOT.jar` (12 MB)
-> from `jenkinsci/jenkins:master` source in 32 seconds on the
-> SuperBadLabs dogfood host. See
+> **Where anvil is honest today:** Jenkinsfiles that use `agent any` or
+> a labeled-agent that maps to the controller, the core declarative
+> vocabulary (sh, dir, parallel, timeout, retry, withEnv, script), and
+> v0.3's seven feature-flagged subsystems (junit dashboard,
+> problem-matchers, GitHub PR checks, declarative matrix, scheduler,
+> secrets, mise/asdf detection).
+>
+> **Where anvil silently walks past today:**
+> `agent { docker/dockerfile/kubernetes }`, `tool('jdk_17_latest')`
+> (returns empty string), `withCredentials(…)` (binds to empty string),
+> Jenkins plugin-step calls beyond the recorder set, Jenkins-plugin
+> class imports. A build that uses these and reports SUCCESS executed
+> a structural walk of the pipeline IR — not the build you expected.
+> Operation Brasstacks Phase 1–3 closes these gaps; the capability
+> matrix tracks the live state per release.
+
+> **Receipt that does work end-to-end:** anvil **v0.3.0** built
+> `cli-2.568-SNAPSHOT.jar` (12 MB) from `jenkinsci/jenkins:master`
+> source in 32 seconds on the SuperBadLabs dogfood host. The
+> jenkinsci/jenkins Jenkinsfile runs under `agent any` + infra-shim
+> shared library — the supported subset. See
 > [`docs/jenkins-self-host/RECEIPT.md`](docs/jenkins-self-host/RECEIPT.md).
 
 > Jenkins® is a registered trademark of LF Charities Inc.  anvil is not
@@ -26,28 +48,43 @@ unchanged — on a modern engine.
 
 ## What anvil is
 
-- **Compatible with Jenkins®.** Point `jenkins-cli.jar` at anvil and
-  trigger builds. Run your existing declarative Jenkinsfile unchanged.
-  anvil parses `pipeline { agent { … } stages { … } post { … } }` and
-  executes the core step vocabulary (sh, dir, withEnv, withCredentials,
-  parallel, timeout, retry, …) plus 19 plugin-step adapters.
+- **A Jenkinsfile parser + a single-host CI executor for the supported
+  subset.** Point `jenkins-cli.jar` at anvil and trigger builds.
+  Jenkinsfiles that fit the supported subset (see
+  [capability matrix](docs/brasstacks/capability.md)) execute for real;
+  Jenkinsfiles that use `agent { docker/kubernetes }`, `tool()`,
+  Jenkins-plugin steps beyond the recorder set, or plugin-class imports
+  walk past those constructs and the build reports SUCCESS for the
+  structural walk. Always verify the build console.
 - **Single-node, single-binary, SQLite-backed.** Install in five
   minutes; no Postgres, no agent cluster, no plugin marketplace,
   no controller-SPOF anxiety.
 - **Built on `chengis-core`.** The pipeline executor is shared with
   [Chengis](https://chengis.io) — the same engine, exposed through
-  a Jenkins-compatible surface.
+  a Jenkins-compatible surface. Operation Brasstacks Phases 1 and 3
+  land the Docker + Kubernetes agent backends, real tool provisioning,
+  credentials binding pipeline, and plugin-step framework in
+  chengis-core; anvil v0.4 is the Jenkinsfile-name mapping layer over
+  the new engine.
 
 ## What anvil is NOT
 
 - Not a multi-tenant CI platform with RBAC, audit, SSO, multi-org —
-  that's Chengis
-- Not feature-complete vs Jenkins for every plugin in the long tail
+  that's Chengis (chengis-product), which Operation Brasstacks Phase 4
+  delivers
+- Not feature-complete vs Jenkins for every plugin in the long tail —
+  see [capability matrix](docs/brasstacks/capability.md) for the
+  honest set
+- Not a drop-in for Jenkinsfiles that depend on Docker / Kubernetes
+  agents, `tool()` provisioning, or Jenkins plugin classpath today.
+  Phase 1–3 closes this gap; the capability matrix tracks live state
 - Not the canonical Jenkins; users seeking the original Jenkins
   experience should use Jenkins directly
 
 See [`../docs/jenkins-compat/divergences.md`](../docs/jenkins-compat/divergences.md)
-for the honest list of every place anvil differs from real Jenkins.
+for the historical divergence list and
+[`docs/brasstacks/capability.md`](docs/brasstacks/capability.md) for the
+live capability matrix.
 
 ---
 
