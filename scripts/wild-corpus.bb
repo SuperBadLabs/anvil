@@ -58,10 +58,19 @@
   (http/post (str anvil "/jenkins/job/" name "/build")
              {:throw false}))
 
-(defn wait-for [{:keys [name]} timeout-secs]
+(defn- latest-build-number [name]
+  ;; Read the job's :builds list — first entry is the most recent. Anvil
+  ;; persists across restarts so a re-trigger allocates build N+1, not 1.
+  ;; Reading the LAST build (not always #1) keeps the matrix honest after
+  ;; the second run onward.
+  (let [r (http/get (str anvil "/jenkins/job/" name "/api/json") {:throw false})]
+    (when (= 200 (:status r))
+      (some-> (json/parse-string (:body r) true) :builds first :number))))
+
+(defn wait-for [{:keys [name]} target-build timeout-secs]
   (let [deadline (+ (System/currentTimeMillis) (* 1000 timeout-secs))]
     (loop []
-      (let [r (http/get (str anvil "/jenkins/job/" name "/1/api/json") {:throw false})]
+      (let [r (http/get (str anvil "/jenkins/job/" name "/" target-build "/api/json") {:throw false})]
         (cond
           (and (= 200 (:status r))
                (let [b (json/parse-string (:body r) true)] (and (:result b) (false? (:building b)))))
@@ -71,8 +80,8 @@
           :else
           (do (Thread/sleep 1500) (recur)))))))
 
-(defn console [{:keys [name]}]
-  (let [r (http/get (str anvil "/jenkins/job/" name "/1/consoleText") {:throw false})]
+(defn console [{:keys [name]} target-build]
+  (let [r (http/get (str anvil "/jenkins/job/" name "/" target-build "/consoleText") {:throw false})]
     (if (= 200 (:status r)) (:body r) "")))
 
 (defn classify [c]
@@ -105,11 +114,17 @@
            (let [_ (println "  Jenkinsfile:" (count src) "bytes")
                  reg (register p src)
                  _ (println "  register:" (:status reg))
+                 ;; Capture latest build number BEFORE trigger so we know
+                 ;; what the next allocation will be. Anvil persists builds
+                 ;; across restarts; without this we'd read stale build #1
+                 ;; on every iteration after the first run.
+                 last-n (or (latest-build-number (:name p)) 0)
                  _ (trigger p)
+                 target (inc last-n)
                  t0 (System/currentTimeMillis)
-                 build (wait-for p per-job-timeout-secs)
+                 build (wait-for p target per-job-timeout-secs)
                  dur (- (System/currentTimeMillis) t0)
-                 c (console p)
+                 c (console p target)
                  cls (classify c)]
              (println (format "  result: %-9s harness-wall: %dms anvil-dur: %sms"
                               (:result build) dur (or (:duration build) "")))

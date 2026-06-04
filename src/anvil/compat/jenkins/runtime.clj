@@ -268,6 +268,41 @@
      "__build"     (leaf :jenkins/build)
      "__error"     (leaf :jenkins/error)
      "__sleep"     (leaf :jenkins/sleep)
+     ;; Jenkins built-ins commonly passed as args to `properties(...)` /
+     ;; `options { }` / `parameters { }` — each returns a no-op map so
+     ;; the enclosing `properties([buildDiscarder(logRotator(...))])`
+     ;; call stops crashing with MissingMethodException. apache-maven's
+     ;; Jenkinsfile uses exactly this pattern inside a declarative
+     ;; `script { }` block, which without these landed as `[script-failed]
+     ;; ("No signature of method: JenkinsDSLScript.logRotator()...")`.
+     ;; Same noop-fn shape as scripted_runtime.clj for consistency.
+     "__buildDiscarder"          (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__logRotator"              (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__disableConcurrentBuilds" (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__disableResume"           (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__skipDefaultCheckout"     (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__skipStagesAfterUnstable" (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__durabilityHint"          (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__timestamps"              (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__ansiColor"               (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__pipelineTriggers"        (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__cron"                    (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__pollSCM"                 (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__githubPush"              (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__parameters"              (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__booleanParam"            (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__choice"                  (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__string"                  (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__text"                    (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__password"                (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__credentials"             (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__file"                    (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__tool"                    (g/clojure-fn->groovy-closure (fn [& _] ""))
+     "__properties"              (g/clojure-fn->groovy-closure (fn [& _] nil))
+     "__withEnv"                 (g/clojure-fn->groovy-closure
+                                  (fn [_env-list body]
+                                    (when (instance? groovy.lang.Closure body)
+                                      (.call ^groovy.lang.Closure body))))
      ;; Property-access object
      "env"         env}))
 
