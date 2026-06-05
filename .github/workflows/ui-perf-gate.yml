@@ -47,15 +47,12 @@ jobs:
           lein: latest
           bb: latest
 
-      # No deps cache during the chengis-core 0.2.0-SNAPSHOT cycle —
-      # we always install chengis-core master fresh so anvil sees the
-      # latest SNAPSHOT. Switch back to actions/cache + a pinned tag
-      # (--branch v0.2.0) after CC2-SOAK clears.
+      # chengis-core 0.2.0 shipped with anvil 0.3.1. Pinned install.
 
-      - name: Install chengis-core from master (v0.2.0-SNAPSHOT cycle)
+      - name: Install chengis-core v0.2.0
         run: |
           rm -rf /tmp/chengis-core
-          git clone --depth 1 \
+          git clone --depth 1 --branch v0.2.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 

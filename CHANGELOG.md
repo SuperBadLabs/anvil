@@ -1,5 +1,92 @@
 # anvil — changelog
 
+## 0.3.1 — Honest Classification Release (2026-06-05)
+
+The "0.3.0 was the parity layer; 0.3.1 is the honesty layer" release.
+v0.3.0's headline framing oversold what running the wild-corpus
+Jenkinsfiles meant — the matrix walk reported 7 false `:success`
+results for builds that produced zero artifacts. This release closes
+that gap at the classification + diagnosis layer. Same parity, told
+straight.
+
+### AN4 family — Wire chengis-core's honest classifier through anvil
+
+- **AN4-1 (#25)** — Replace anvil's lossy
+  `(case status :ok :success :failed :failure :success)` build-result
+  classifier with `chengis.engine.result/classify` from chengis-core
+  0.2.0. Effects → observation → verdict.
+- **AN4-2 (#26)** — Container agents the runner can't honor
+  (`docker` / `dockerfile` / `kubernetes`) emit explicit
+  `[:agent/degraded]` effects. The classifier reads these as
+  `:unsupported`, NOT silent success.
+- **AN4-3 (#27)** — `tool('jdk_17_latest')` routes through
+  `chengis.tools/resolve!`. Unresolved tools emit `:tool-unresolved`
+  effect with the descriptor; the classifier reads as
+  `:unsupported-construct`. Handles `CharSequence` + named-arg `Map`
+  shapes.
+- **AN4-4 (#28)** — `withCredentials([file(credentialsId: 'X', …)])`
+  with missing ID emits `:credential-unresolved` effect; classifier
+  reads as `:failure` with rule `:credential-unresolved`. No more
+  silently-empty `GPG_KEY=""` substitutions.
+- **AN4-5 (#29)** — Build page renders new `:neutral` (gray) and
+  `:unsupported` (amber) badges. Below the badge: a banner with the
+  classifier's `:rule` + `:explain` so operators see WHY a build was
+  reclassified without digging through effects.
+- **AN4-6 (#30)** — Jenkins API maps `:neutral` and `:unsupported` to
+  Jenkins-canonical `NOT_BUILT` for jenkins-cli + GitHub Jenkins
+  plugin compatibility; the rule + explain remain in the
+  anvil-native response.
+
+### AN5 family — Surface silent failures + lock down the baseline
+
+- **AN5-1 (#31)** — Walk-shape synthesizer in
+  `anvil.compat.jenkins.classification`. When the pipeline IR walked
+  but no productive effect was recorded, synthesize a diagnostic
+  `[:unknown {:name X}]` effect so the build reclassifies from
+  vacuous `:neutral` to actionable `:unsupported`. Two cases:
+  scripted `@Library` declared but unresolved
+  (`library.X-unresolved`), declarative stage body silently skipped
+  (`translator.body-skipped`). 8 new tests; 24/54 in
+  `classification-test`.
+- **AN5-3a (#32)** — End-to-end real-artifact smoke test locks down
+  anvil's basic execute path in CI: a minimal Jenkinsfile with
+  `agent any` + `sh 'echo … > artifact.txt'` + `archiveArtifacts`
+  through the full stack produces a real file on disk + `:archive`
+  effect + `:success` classification. 6 new tests; the canary that
+  catches future regressions in the simple-IR execute path.
+- **AN5-DOC (#33)** — Rewrites
+  `docs/jenkins-compat/wild-corpus-honest-receipt.md` (renamed from
+  `wild-corpus-an4-receipt.md`) to tell the honest story end-to-end:
+  the headline now quotes BOTH the false-success axis (0/15) AND the
+  real-artifact axis (still 0/15). The original "0/15 false :SUCCESS
+  = victory" framing was scaffolding sold as receipt; this rewrite
+  owns that.
+
+### Dogfood receipt
+
+`anvil-self-test` job on the dogfood instance ran anvil's own
+`lein test :only anvil.compat.jenkins.classification-test` through
+anvil v0.3.0 with master SCM, against this release's source. 24
+tests / 54 assertions / 0 failures. Real artifacts archived (
+`artifact.txt`, `test-out.txt`). Classification: `:success`. **The
+CI eating its own tail, classified honestly.**
+
+### What 0.3.1 is NOT
+
+This release does NOT produce real artifacts for the wild-corpus
+matrix. Those still need: AN5-2 (external `@Library` loader), AN5-3
+(full container-agent honor via chengis-core's DockerBackend),
+CC2-EX3b (concrete Temurin/Maven/Gradle/Node installers). Tracked
+on the v0.4 board. See
+`docs/jenkins-compat/wild-corpus-honest-receipt.md` for the
+per-project breakdown.
+
+### Dependencies
+
+- **`superbadlabs/chengis-core 0.2.0`** (was 0.1.0). The AN4 wiring
+  consumes EX1a/b execution-backend, EX2 classifier, EX3a tools
+  registry, EX4 credentials, EX5 step framework.
+
 ## Unreleased — post-0.3.0 wild-corpus exposure
 
 ### Honest amendment to the 0.3.0 release notes
