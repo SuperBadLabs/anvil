@@ -56,7 +56,17 @@
    bindings, etc. work natively. Closed-by-default; existing
    scripted-Pipeline static-IR path remains the v0.3 behavior."
   #{:junit :problem-matchers :pr-checks :matrix :scheduler :secrets :mise
-    :scripted-eval})
+    :scripted-eval
+
+    ;; AN5-4 — h-sh rewrites standalone `mvn ... deploy ...` calls to
+    ;; `mvn ... package ...` BEFORE subprocess spawn. Wild-corpus
+    ;; Jenkinsfiles call `mvn clean deploy` expecting Apache's deploy
+    ;; credentials; without them, the deploy step crashes with HTTP
+    ;; 401 and no jar lands despite all earlier phases succeeding.
+    ;; With this flag on, the rewrite happens, jar lands in target/,
+    ;; archiveArtifacts picks it up. Emits a `[:mvn/deploy-degraded]`
+    ;; effect so the rewrite is operator-visible.
+    :mvn-deploy-degrade})
 
 (def ^:private flag-ns "anvil.features")
 
