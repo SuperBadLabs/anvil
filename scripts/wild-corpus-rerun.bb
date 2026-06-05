@@ -116,7 +116,7 @@
         _ (println "Triggering builds...")
         _ (doseq [t targets]
             (printf "  → trigger %s ... " (:name t))
-            (let [s (trigger-build! t)] (println s)))
+            (let [s (trigger-build! (:name t))] (println s)))
         ;; Wait for completion — each build has its own timeout
         _ (println "Waiting for completion (poll every 30s, max 30 min)...")
         completed (atom #{})
