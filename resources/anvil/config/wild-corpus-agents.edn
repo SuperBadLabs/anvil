@@ -1,0 +1,89 @@
+;; anvil agents.edn — wild-corpus dirty-dozen overlay (AN5-3d)
+;;
+;; This file maps the labels the 14 wild-corpus Jenkinsfiles use to
+;; sensible docker images via AN5-3c's `:executor :docker` registry
+;; path. With this overlay loaded (instead of the default agents.edn
+;; or merged on top), anvil's runner honors `agent { label 'X' }`
+;; specs as real container exec end-to-end via the chengis-core
+;; DockerBackend (AN5-3 / AN5-3b / AN5-3c).
+;;
+;; USAGE
+;; -----
+;; Operators load this overlay by either:
+;;
+;;   1. Setting ANVIL_CONFIG_DIR to the directory containing this file:
+;;        ANVIL_CONFIG_DIR=resources/anvil/config lein run --port 8765
+;;        (then rename this to `agents.edn` in that dir, or symlink it)
+;;
+;;   2. Copying its contents into `config/agents.edn` in the daemon's
+;;      working directory.
+;;
+;; The Docker daemon must be reachable from the anvil process for the
+;; :executor :docker entries to actually run; otherwise builds emit
+;; `:agent/degraded` with `:reason :runtime-unsupported`.
+;;
+;; THE 12 + 2
+;; ----------
+;; The wild-corpus contains 15 Jenkinsfiles. apache-cassandra and
+;; eclipse-mojarra timed out the harness (k8s agents + huge YAML
+;; declaratives) in the original run; they're out of scope for this
+;; overlay. apache-cassandra (dockerfile) also requires anvil's
+;; dockerfile-agent support which is on the v0.4 board, not v0.3.x.
+;;
+;; LABEL → IMAGE TABLE
+;; -------------------
+;; ubuntu          → maven:3.9-eclipse-temurin-21  (the wild-corpus default)
+;; ubuntu-latest   → same (eclipse-jdt-core's preferred shape)
+;; Hadoop          → maven:3.9-eclipse-temurin-17  (zookeeper expects JDK 17)
+;; migration       → eclipse-temurin:21-jdk        (epsilon migration tooling)
+;;
+;; Choosing maven:3.9-eclipse-temurin-21 as the default reflects:
+;;   - Maven 3.9.x is the current Apache release line as of 2026-Q2
+;;   - Eclipse Temurin 21 is current LTS
+;;   - All wild-corpus builds tested compile under JDK 21 (except hbase
+;;     which is on JDK 17 — see :Hadoop entry)
+;;
+;; LABELS NOT IN THIS OVERLAY
+;; --------------------------
+;; ${PLATFORM} (apache-camel): resolves at runtime via Groovy
+;;   interpolation; AN5-3d doesn't try to predict the value. The
+;;   per-build :degrade-reason will be visible in the build log.
+;;
+;; Worker&&Containers (hibernate-orm, hibernate-search): a label
+;;   *expression* (Jenkins's and-combinator), not a plain label.
+;;   anvil v0.3.x doesn't yet implement label expression parsing — see
+;;   the v0.4 board. With AN5-2 (external @Library) also unmerged,
+;;   hibernate-orm/search remain blocked regardless of this overlay.
+
+{:default {:executor :local
+           :env      {}
+           :cwd      "/tmp/anvil-workspace"}
+
+ :labels
+ {;; The wild-corpus default — used by apache-cxf, apache-maven,
+  ;; apache-streampipes, apache-camel-quarkus (default), eclipse-jkube.
+  "ubuntu"            {:executor :docker
+                       :image    "maven:3.9-eclipse-temurin-21"}
+
+  ;; eclipse-jdt-core's preferred label; same image
+  "ubuntu-latest"     {:executor :docker
+                       :image    "maven:3.9-eclipse-temurin-21"}
+
+  ;; apache-zookeeper's matrix uses JDK 8 / 11 / 17; we pin JDK 17 as
+  ;; the lowest common runtime in maven-friendly form
+  "Hadoop"            {:executor :docker
+                       :image    "maven:3.9-eclipse-temurin-17"}
+
+  ;; eclipse-epsilon migration tooling; needs Eclipse + JDK 21
+  "migration"         {:executor :docker
+                       :image    "eclipse-temurin:21-jdk"}
+
+  ;; ---------------------------------------------------------------
+  ;; Default labels carried over from the canonical agents.edn so
+  ;; non-wild-corpus jobs running against this overlay keep working.
+  ;; ---------------------------------------------------------------
+  "linux"             {:executor :local
+                       :env      {}}
+
+  "any"               {:executor :local
+                       :env      {}}}}
