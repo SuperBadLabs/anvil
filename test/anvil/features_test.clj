@@ -22,7 +22,13 @@
   (testing "v0.3 board T1–T7 each have a reserved flag"
     (is (= #{:junit :problem-matchers :pr-checks
              :matrix :scheduler :secrets :mise}
-           (disj features/known-features :scripted-eval)))))
+           ;; Filter out post-v0.3.0 additions so the test stays
+           ;; locked on the seven Tier-1 tranches:
+           ;;   :scripted-eval      — post-v0.3.0 Tier-3 worthiness
+           ;;   :mvn-deploy-degrade — AN5-4 wild-corpus artifact unlock
+           (-> features/known-features
+               (disj :scripted-eval)
+               (disj :mvn-deploy-degrade))))))
 
 (deftest enabled?-defaults-to-false
   (testing "every known feature is closed-by-default"

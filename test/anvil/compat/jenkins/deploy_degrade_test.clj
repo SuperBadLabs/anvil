@@ -137,3 +137,37 @@
       (is (true? (:degraded? r)))
       (is (= "mvn -Pci -B -e -DskipTests clean install package"
              (:rewritten r))))))
+
+;; ---------------------------------------------------------------------------
+;; PR #40 Copilot review: compound shell commands with `deploy` BEFORE mvn
+;; must NOT trigger a rewrite. Locks down the scoping behavior.
+;; ---------------------------------------------------------------------------
+
+(deftest compound-cd-deploy-then-mvn-install-is-not-degraded
+  (testing "directory named `deploy` BEFORE the mvn call is not a goal"
+    (let [cmd "cd deploy && mvn install"
+          r (dd/maybe-degrade cmd true)]
+      (is (false? (:degraded? r))
+          "cd deploy && mvn install must NOT rewrite — `deploy` is a dir token"))))
+
+(deftest compound-cd-src-deploy-then-mvn-install-is-not-degraded
+  (testing "directory path `src/deploy` BEFORE the mvn call is not a goal"
+    (let [cmd "cd src/deploy && mvn install -DskipTests"
+          r (dd/maybe-degrade cmd true)]
+      (is (false? (:degraded? r))
+          "src/deploy is a directory path, not a maven goal"))))
+
+(deftest compound-cd-deploy-then-mvn-deploy-rewrites-only-goal
+  (testing "dir BEFORE mvn is left alone; goal AFTER mvn IS rewritten"
+    (let [cmd "cd deploy && mvn clean deploy"
+          r (dd/maybe-degrade cmd true)]
+      (is (true? (:degraded? r)))
+      (is (= "cd deploy && mvn clean package" (:rewritten r))
+          "the `cd deploy` part stays; only the post-mvn `deploy` rewrites"))))
+
+(deftest cd-deploy-without-mvn-call-is-not-detected
+  (testing "no mvn at all → no rewrite, even with `deploy` in cmd"
+    (let [cmd "cd deploy && make install"
+          r (dd/maybe-degrade cmd true)]
+      (is (false? (:degraded? r))
+          "no mvn anywhere → detector returns nil"))))

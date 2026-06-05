@@ -66,47 +66,66 @@
 ;;   mvn package -Pdeploy                ← profile name, not a goal
 ;; ---------------------------------------------------------------------------
 
-(def ^:private mvn-deploy-goal-pattern
-  "Regex that detects `deploy` as a standalone maven goal-phase token
-   anywhere in an mvn command line. Uses lookbehind/lookahead so
-   `deploy:deploy-file` and `-Pdeploy` don't match."
-  ;; Word-boundary before & after, NOT preceded by `-P|-D|-Pl|:` (which
-  ;; would indicate it's a profile/property/plugin-mojo), NOT followed
-  ;; by `:` (plugin-mojo form). The `(?<![-:])` keeps `deploy` from
-  ;; matching when preceded by `-` or `:`.
-  #"(?<![-:])\bdeploy\b(?!:)")
+;; Token-based detection. Splitting on whitespace gives us shell-style
+;; tokens; we then scan for the mvn invocation token, then look for a
+;; bare-`deploy` token AFTER it. This is more robust than regex with
+;; lookbehinds because the mvn detection and the goal detection use the
+;; same token shape — no positional drift between the two.
 
-(defn- mvn-invocation?
-  "True if `cmd` includes a maven invocation. Matches `mvn`, `./mvnw`,
-   `mvnDebug`, `mvnyjp`, etc. — anything starting with `mvn` as a word
-   boundary. Excludes `mvnDeploy` (single-word lookups for misc tools)."
-  [cmd]
-  (boolean
-   (or (re-find #"(?:^|[\s;&|`])(?:\.?/)?mvn(?:w|Debug|yjp)?\s" cmd)
-       (re-find #"(?:^|[\s;&|`])(?:\.?/)?mvn(?:w|Debug|yjp)?$" cmd))))
+(def ^:private mvn-token-pattern
+  "Matches a single shell token that is a maven invocation:
+   `mvn`, `./mvnw`, `mvnDebug`, `mvnyjp`, `/usr/local/bin/mvn`, etc."
+  #"(?:\.?\/)?(?:[^\s/]+/)*mvn(?:w|Debug|yjp)?")
+
+(defn- mvn-token? [tok]
+  (boolean (re-matches mvn-token-pattern tok)))
 
 (defn detect-mvn-deploy
-  "Pure detector. Returns nil if `cmd` is not an mvn invocation that
-   includes a standalone `deploy` goal. Returns a map of the matched
-   region when it is:
+  "Pure detector. Splits `cmd` into shell tokens and looks for:
+
+     1. An mvn-invocation token (mvn / ./mvnw / mvnDebug / mvnyjp)
+     2. A bare `deploy` token APPEARING AFTER the mvn token
+
+   Returns a map describing the match when both conditions hold,
+   else nil:
 
      {:matched? true
-      :goal-index INT  — char index where 'deploy' starts}"
+      :tokens VEC          — split-on-whitespace tokens
+      :mvn-token-index INT — index of the mvn invocation token
+      :goal-token-index INT — index of the bare `deploy` goal token}
+
+   Rejects:
+     - `cd deploy && mvn install`        (no `deploy` after mvn)
+     - `mvn deploy:deploy-file`          (token is `deploy:deploy-file`, not bare)
+     - `mvn -Pdeploy`, `mvn -Ddeploy`    (token is `-Pdeploy`, not bare)
+     - `cd src/deploy && make install`   (no mvn at all)
+     - `echo deploy`                     (no mvn)"
   [cmd]
-  (when (and (string? cmd) (mvn-invocation? cmd))
-    (when-let [m (re-find mvn-deploy-goal-pattern cmd)]
-      (let [idx (str/index-of cmd m)]
-        {:matched? true
-         :goal-index idx
-         :goal m}))))
+  (when (string? cmd)
+    (let [tokens (clojure.string/split cmd #"\s+")
+          mvn-idx (first (keep-indexed (fn [i t] (when (mvn-token? t) i)) tokens))]
+      (when mvn-idx
+        (when-let [deploy-idx (first (keep-indexed
+                                       (fn [i t]
+                                         (when (and (> i mvn-idx) (= "deploy" t))
+                                           i))
+                                       tokens))]
+          {:matched? true
+           :tokens (vec tokens)
+           :mvn-token-index mvn-idx
+           :goal-token-index deploy-idx})))))
 
 (defn degrade-cmd
-  "Rewrite `cmd` by replacing the first standalone `deploy` goal with
-   `package`. Returns the rewritten string, or `cmd` unchanged when no
-   degrade applies. Pure."
+  "Rewrite `cmd` by replacing the bare `deploy` goal-token AFTER the
+   mvn invocation with `package`. Returns the rewritten string, or
+   `cmd` unchanged when no degrade applies. Pure.
+
+   Crucially, `deploy` mentions BEFORE the mvn invocation (`cd src/deploy
+   &&` directory tokens) are left untouched — only the bare `deploy`
+   token that follows the mvn call gets rewritten."
   [cmd]
-  (if (detect-mvn-deploy cmd)
-    (str/replace-first cmd mvn-deploy-goal-pattern "package")
+  (if-let [{:keys [tokens goal-token-index]} (detect-mvn-deploy cmd)]
+    (clojure.string/join " " (assoc tokens goal-token-index "package"))
     cmd))
 
 (defn maybe-degrade
