@@ -1073,14 +1073,30 @@
         old-env (:env ctx {})
         merged-env (if resolved (merge old-env (:env resolved)) old-env)
         label (or (:label (:agent step))
-                  (some-> (:agent step) :type name))]
+                  (some-> (:agent step) :type name))
+        ;; AN5-3c: when the registry resolves the label to a docker
+        ;; executor (e.g. agents.edn maps "ubuntu" → {:executor :docker
+        ;; :image "eclipse-temurin:21"}), upgrade ctx :active-agent
+        ;; from the original {:label "ubuntu"} shape to a
+        ;; {:docker {:image "..."}} shape so AN5-3b's backend-wiring
+        ;; routes h-sh through the chengis-core DockerBackend.
+        ;; This is the bridge between Jenkins's "named agents" model
+        ;; and anvil's pluggable executors — the unlock for the
+        ;; wild-corpus dirty-dozen, all of which use agent { label
+        ;; '...' } rather than agent { docker { ... } }.
+        active-agent (or (and resolved
+                              (= :docker (:executor resolved))
+                              (:docker resolved)
+                              {:docker (:docker resolved)
+                               :resolved-from-label label})
+                         (:agent step))]
     (when (and resolved (:degraded? resolved))
       (log-effect d [:agent/degraded
                      {:label label
                       :fallback-from (:fallback-from resolved)
                       :reason (:degrade-reason resolved)}]))
     (ok (cond-> (assoc ctx
-                       :active-agent (:agent step)
+                       :active-agent active-agent
                        :active-stage (:stage step)
                        :pre-agent-env old-env
                        :env merged-env)
