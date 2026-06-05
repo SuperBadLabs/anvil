@@ -69,15 +69,38 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- merge-defaults [default entry label]
-  (cond-> {:executor (or (:executor entry) (:executor default) :local)
-           :label    label
-           :env      (merge (or (:env default) {}) (or (:env entry) {}))
-           :cwd      (or (:cwd entry) (:cwd default) "/tmp/anvil-workspace")
-           :raw      entry}
-    (:degraded? entry)
-    (assoc :degraded? true
-           :degrade-reason (or (:degrade-reason entry)
-                               "Label flagged as degraded in agents.edn"))))
+  (let [executor (or (:executor entry) (:executor default) :local)]
+    (cond-> {:executor executor
+             :label    label
+             :env      (merge (or (:env default) {}) (or (:env entry) {}))
+             :cwd      (or (:cwd entry) (:cwd default) "/tmp/anvil-workspace")
+             :raw      entry}
+      ;; AN5-3c: when the registry entry says :executor :docker, surface
+      ;; the docker config under :docker so the dispatcher can translate
+      ;; it into a ctx :active-agent {:docker {:image ...}} shape that
+      ;; AN5-3b's backend-wiring path honors. Without this, label-agent
+      ;; builds with :executor :docker silently fell back to LocalShell.
+      ;;
+      ;; CRITICAL: only surface :docker when a non-blank :image is
+      ;; actually present. An entry like {:executor :docker :docker {}}
+      ;; (or with :docker {:args "..."}  but no :image) is malformed —
+      ;; surfacing {:image nil} would route execution through
+      ;; DockerBackend which then fails on `docker run nil` with a
+      ;; confusing error. Better to leave :docker out and let the
+      ;; dispatcher fall back to LocalShell with a degraded warning.
+      (and (= :docker executor)
+           (let [img (or (:image entry) (-> entry :docker :image))]
+             (and (string? img) (not (clojure.string/blank? img)))))
+      (assoc :docker
+             (cond-> {:image (or (:image entry)
+                                 (-> entry :docker :image))}
+               (or (:args entry) (-> entry :docker :args))
+               (assoc :args (or (:args entry) (-> entry :docker :args)))))
+
+      (:degraded? entry)
+      (assoc :degraded? true
+             :degrade-reason (or (:degrade-reason entry)
+                                 "Label flagged as degraded in agents.edn")))))
 
 (defn resolve-label
   "Look up `label` in the registry. Returns a fully-merged executor
