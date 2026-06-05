@@ -188,3 +188,92 @@
              [[:stdout "x"] [:stderr "y"] [:echo "z"]])]
     (is (zero? (:shell-steps-run obs)))
     (is (empty? (:recorded-effects obs)))))
+
+;; ---------------------------------------------------------------------------
+;; AN5-1 — Walk-shape synthesizer
+;;
+;; The wild-corpus matrix surfaced 5 builds where the IR walked but
+;; produced zero effects. These tests lock down the synthesizer that
+;; turns those silent walks into named :unsupported classifications
+;; with operator-actionable :explain strings.
+;; ---------------------------------------------------------------------------
+
+(deftest synthesizer-noop-when-pipeline-ir-absent
+  (testing "no pipeline-ir passed → behavior unchanged from pre-AN5-1"
+    (let [c1 (c/classify-build {:status :ok} [] {})]
+      (is (= :neutral (:result c1)))
+      (is (= :no-effects-recorded (:rule c1)))
+      (is (empty? (:synthetic-effects c1))))))
+
+(deftest synthesizer-noop-when-real-effects-recorded
+  (testing "productive effects present → no synthesis"
+    (let [ir {:stages [{:name "Build"}]
+              :libraries [{:name "unknown-lib"}]}
+          c1 (c/classify-build {:status :ok} [(sh-eff 0)] {:pipeline-ir ir})]
+      (is (= :success (:result c1)))
+      (is (empty? (:synthetic-effects c1))
+          "real shell ran → don't add diagnostic noise"))))
+
+(deftest synthesizer-empty-walk-with-stages-reclassifies-unsupported
+  (testing "apache-camel shape: stages walked but body skipped"
+    (let [ir {:stages [{:name "BuildAndTest"}]
+              :options [{:scripted-pipeline? false}]}
+          c1 (c/classify-build {:status :ok} [] {:pipeline-ir ir})]
+      (is (= :unsupported (:result c1))
+          "empty walk over non-empty stages must classify as :unsupported")
+      (is (= :unsupported-construct (:rule c1)))
+      (is (= 1 (count (:synthetic-effects c1))))
+      (let [eff (first (:synthetic-effects c1))]
+        (is (= :unknown (first eff)))
+        (is (= "translator.body-skipped" (-> eff second :name)))
+        (is (= 1 (-> eff second :anvil/stage-count)))))))
+
+(deftest synthesizer-empty-walk-with-only-agent-degraded-reclassifies-unsupported
+  (testing "apache-zookeeper shape: agent label degraded then body skipped"
+    (let [ir {:stages [{:name "Build"}]}
+          effects [[:agent/degraded
+                    {:requested-agent {:type "label" :label "Hadoop"}
+                     :active-agent :any}]]
+          c1 (c/classify-build {:status :ok} effects {:pipeline-ir ir})]
+      (is (= :unsupported (:result c1))
+          "label-degraded + empty body still classifies as :unsupported via synth")
+      (is (= 1 (count (:synthetic-effects c1))))
+      (is (= 1 (-> c1 :synthetic-effects first second :anvil/agent-degraded-count))))))
+
+(deftest synthesizer-shared-lib-takes-precedence-over-body-skipped
+  (testing "hibernate-orm shape: @Library declared but unresolved"
+    (let [ir {:stages [{:name "(scripted-eval)"}]
+              :libraries [{:name "hibernate-jenkins-pipeline-helpers"}]
+              :options [{:scripted-pipeline? true}]}
+          c1 (c/classify-build {:status :ok} [] {:pipeline-ir ir})]
+      (is (= :unsupported (:result c1)))
+      (is (= 1 (count (:synthetic-effects c1)))
+          "shared-lib cause wins; don't also emit body-skipped")
+      (let [eff (first (:synthetic-effects c1))]
+        (is (= :unknown (first eff)))
+        (is (clojure.string/includes?
+             (-> eff second :name)
+             "library.hibernate-jenkins-pipeline-helpers-unresolved"))
+        (is (= :shared-lib (-> eff second :anvil/cause)))))))
+
+(deftest synthesizer-multiple-libraries-each-synthesized
+  (let [ir {:stages [{:name "X"}]
+            :libraries [{:name "lib-one"} {:name "lib-two"}]}
+        c1 (c/classify-build {:status :ok} [] {:pipeline-ir ir})]
+    (is (= 2 (count (:synthetic-effects c1)))
+        "one synth per unresolved library")))
+
+(deftest synthesizer-skipped-when-no-stages-and-no-libraries
+  (testing "truly empty IR → still :neutral (synthesizer has nothing to say)"
+    (let [ir {:stages []}
+          c1 (c/classify-build {:status :ok} [] {:pipeline-ir ir})]
+      (is (= :neutral (:result c1)))
+      (is (empty? (:synthetic-effects c1))))))
+
+(deftest synthesizer-explain-string-mentions-step-name
+  (testing "the :explain text the operator sees calls out the construct"
+    (let [ir {:stages [{:name "Build"}]
+              :libraries [{:name "missing-lib"}]}
+          c1 (c/classify-build {:status :ok} [] {:pipeline-ir ir})]
+      (is (clojure.string/includes? (:explain c1) "missing-lib")
+          ":explain must name the unresolved library so operators can act"))))
