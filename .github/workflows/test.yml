@@ -36,14 +36,13 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core 0.2.0-SNAPSHOT from master (Brasstacks v0.2 dev)
+      - name: Install chengis-core v0.2.0
         run: |
-          # Track chengis-core master during the v0.2 SNAPSHOT cycle. After
-          # CC2-SOAK clears and v0.2.0 is tagged, switch back to a pinned
-          # --branch v0.2.0 install. Re-installs every run because SNAPSHOT
-          # contents change as the chengis-core v0.2 tranches ship.
+          # chengis-core 0.2.0 shipped with anvil 0.3.1. Pinned install —
+          # same shape as the v0.1.0 install before the CC2-EX SNAPSHOT
+          # cycle. Next bump when chengis-core ships 0.3.0.
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch master \
+          git clone --depth 1 --branch v0.2.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 
@@ -86,14 +85,13 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core 0.2.0-SNAPSHOT from master (Brasstacks v0.2 dev)
+      - name: Install chengis-core v0.2.0
         run: |
-          # Track chengis-core master during the v0.2 SNAPSHOT cycle. After
-          # CC2-SOAK clears and v0.2.0 is tagged, switch back to a pinned
-          # --branch v0.2.0 install. Re-installs every run because SNAPSHOT
-          # contents change as the chengis-core v0.2 tranches ship.
+          # chengis-core 0.2.0 shipped with anvil 0.3.1. Pinned install —
+          # same shape as the v0.1.0 install before the CC2-EX SNAPSHOT
+          # cycle. Next bump when chengis-core ships 0.3.0.
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch master \
+          git clone --depth 1 --branch v0.2.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 

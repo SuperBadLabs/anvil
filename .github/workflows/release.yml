@@ -34,7 +34,7 @@ jobs:
 
       - name: Install chengis-core 0.1.0
         run: |
-          git clone --depth 1 --branch v0.1.0 \
+          git clone --depth 1 --branch v0.2.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 
