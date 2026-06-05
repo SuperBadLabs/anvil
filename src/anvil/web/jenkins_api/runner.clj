@@ -187,15 +187,29 @@
                 ;; classifier. Empty-walk builds reclassify as :neutral;
                 ;; silently-skipped docker/k8s agents reclassify as
                 ;; :unsupported; non-zero shell exits as :failure.
-                classified (classify/classify-build result effects {})
+                ;; AN5-1: pass pipeline-ir so the classifier can run
+                ;; the walk-shape synthesizer and turn silent failures
+                ;; (empty walks, unresolved @Library) into honest
+                ;; :unsupported classifications with named :rule.
+                classified (classify/classify-build
+                            result effects
+                            {:pipeline-ir pipeline-ir})
                 build-result (:result classified)
+                synth-effects (:synthetic-effects classified)
+                ;; Persist enriched effects so the build-page Raw-effects
+                ;; fold and the AN4-5 banner stay consistent with what
+                ;; the classifier actually classified on.
+                effects-for-persist (vec (concat effects synth-effects))
                 _ (log/info (str "anvil.classify: " job-name " #" number
                                  " → " build-result
                                  " (rule=" (:rule classified) ") "
-                                 (:explain classified)))]
+                                 (:explain classified)
+                                 (when (seq synth-effects)
+                                   (str " [+" (count synth-effects)
+                                        " synthetic AN5-1]"))))]
             (jobs/record-build-end! job-name number
                                     {:result build-result
-                                     :effects effects
+                                     :effects effects-for-persist
                                      :log-path log-path
                                      :classify-rule (:rule classified)
                                      :classify-explain (:explain classified)})
@@ -203,7 +217,14 @@
              :result build-result
              :rule (:rule classified)
              :explain (:explain classified)
-             :effect-count (count effects)
+             ;; Count after enrichment so the API response matches what
+             ;; the UI's Raw-effects fold renders and what
+             ;; record-build-end! persisted on the build row. AN5-1
+             ;; synthetic effects are real effects from the operator's
+             ;; perspective — they shape the classification, they
+             ;; persist, they render.
+             :effect-count (count effects-for-persist)
+             :synthetic-effect-count (count synth-effects)
              :workspace workspace-path
              :log-path log-path})
 
