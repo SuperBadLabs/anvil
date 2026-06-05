@@ -75,6 +75,34 @@
         (is (nil? (:docker resolved))
             "no :docker config synthesized — downstream falls through")))))
 
+(deftest registry-docker-executor-with-args-only-stays-vacuous
+  (testing "PR #37 Copilot review item: :docker {:args \"...\"} without :image"
+    ;; The bug: previous version would emit {:docker {:image nil :args ...}}
+    ;; and the dispatcher would route to DockerBackend with image=nil →
+    ;; confusing `docker run nil` failure. Defensive fix: only surface
+    ;; :docker config when a non-blank :image string is present.
+    (with-redefs [reg/registry
+                  (constantly
+                   {:default {:executor :local :env {} :cwd "/tmp"}
+                    :labels {"only-args" {:executor :docker
+                                          :docker {:args "--network host"}}}})]
+      (let [resolved (reg/resolve-label "only-args")]
+        (is (= :docker (:executor resolved)))
+        (is (nil? (:docker resolved))
+            "no :image → no :docker config, dispatcher falls through cleanly")))))
+
+(deftest registry-docker-executor-with-blank-image-stays-vacuous
+  (testing "blank :image string is also rejected"
+    (with-redefs [reg/registry
+                  (constantly
+                   {:default {:executor :local :env {} :cwd "/tmp"}
+                    :labels {"blank-image" {:executor :docker :image ""}}
+                              ;; ↑ malformed: empty string is not a valid image
+                              })]
+      (let [resolved (reg/resolve-label "blank-image")]
+        (is (nil? (:docker resolved))
+            "blank :image must NOT propagate — would crash docker run")))))
+
 ;; ---------------------------------------------------------------------------
 ;; Default agents.edn keeps current behavior (no docker entries yet)
 ;; ---------------------------------------------------------------------------

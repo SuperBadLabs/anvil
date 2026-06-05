@@ -80,7 +80,17 @@
       ;; it into a ctx :active-agent {:docker {:image ...}} shape that
       ;; AN5-3b's backend-wiring path honors. Without this, label-agent
       ;; builds with :executor :docker silently fell back to LocalShell.
-      (and (= :docker executor) (or (:image entry) (:docker entry)))
+      ;;
+      ;; CRITICAL: only surface :docker when a non-blank :image is
+      ;; actually present. An entry like {:executor :docker :docker {}}
+      ;; (or with :docker {:args "..."}  but no :image) is malformed —
+      ;; surfacing {:image nil} would route execution through
+      ;; DockerBackend which then fails on `docker run nil` with a
+      ;; confusing error. Better to leave :docker out and let the
+      ;; dispatcher fall back to LocalShell with a degraded warning.
+      (and (= :docker executor)
+           (let [img (or (:image entry) (-> entry :docker :image))]
+             (and (string? img) (not (clojure.string/blank? img)))))
       (assoc :docker
              (cond-> {:image (or (:image entry)
                                  (-> entry :docker :image))}
