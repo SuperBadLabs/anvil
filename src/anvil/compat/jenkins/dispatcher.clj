@@ -117,70 +117,94 @@
    {:exit INT :stdout STRING :stderr STRING :streamed? BOOL}.
    Never throws — runtime errors become exit=-1 with the message in stderr.
 
-   When ctx has :active-agent with a :docker spec, wraps with
-   `docker run --rm -v <cwd>:<cwd> -w <cwd> <image> sh -c <cmd>`.
+   ROUTING (AN5-3b)
+   ================
+   When `ctx :active-agent` declares a `:docker {:image ...}` shape, the
+   call routes through `chengis.engine.backend.docker/DockerBackend` via
+   `anvil.compat.jenkins.backend-wiring/execute-via-backend`. That gives
+   us the chengis-core lifecycle (prepare-workspace → execute-step →
+   cleanup) with proper image-pull handling and SIGTERM→SIGKILL cancel
+   grace. The bridge maps the chengis-core return shape back to anvil's
+   {:exit :stdout :stderr :streamed?} so nothing downstream changes.
 
-   When ctx has :timeout-deadline (an epoch-ms long), the subprocess is
-   spawned async; if the remaining time is exceeded, the underlying
-   java.lang.Process gets destroyForcibly'd. Exit code 124 is returned
-   in that case (matches GNU coreutils' `timeout`).
+   When the active-agent is non-docker (label, any, none, or absent),
+   we stay on the inline TX9 subprocess path — same babashka.process
+   spawn, same log-file streaming, same timeout enforcement, same
+   credential masking. That path is what 99% of v0.3.x builds use and
+   has been hardened across PRs #164 / TX9-13; we don't gain anything
+   by routing it through the backend protocol yet (LocalShell is just a
+   wrapper around the same subprocess primitive). AN5-3c can swap it
+   once docker has soaked.
 
-   When ctx has :log-file (a java.io.File), the subprocess's stdout AND
-   stderr are merged via `2>&1` and redirected to the file as a stream
-   — no in-memory buffering. Returns :streamed? true; :stdout / :stderr
-   strings are empty in this mode. The console-log on disk is the
-   source of truth.
+   Timeout: when ctx has :timeout-deadline (epoch-ms long), the inline
+   path enforces it via babashka.process + destroyForcibly; the backend
+   path passes the remaining-ms through chengis-core's :timeout field
+   which the backend honors with its own kill logic.
 
-   When :log-file is nil, behavior is unchanged from TX9 phase 1: stdout
-   and stderr captured as strings, returned in the result map."
-  [cmd {:keys [cwd env timeout-deadline log-file] :as ctx}]
-  (try
-    (let [docker (docker-spec ctx)
-          deadline-ms (when (number? timeout-deadline)
-                        (max 1 (- timeout-deadline (System/currentTimeMillis))))
-          ;; In streaming mode, both stdout AND stderr are redirected
-          ;; to the same on-disk file in append mode. We use
-          ;; ProcessBuilder$Redirect/appendTo for both streams so
-          ;; multi-step pipelines accumulate cleanly.
-          stream? (some? log-file)
-          append-redirect (when stream?
-                            (java.lang.ProcessBuilder$Redirect/appendTo log-file))
-          base-opts (cond-> {:continue true}
-                      stream?       (assoc :out append-redirect
-                                           :err append-redirect)
-                      (not stream?) (assoc :out :string :err :string)
-                      cwd           (assoc :dir (str cwd))
-                      (seq env)     (assoc :extra-env env))
-          argv (if docker
-                 (build-docker-args docker cmd cwd env)
-                 ["sh" "-c" cmd])
-          pb (apply bp/process base-opts argv)
-          completed (if deadline-ms
-                      (let [fut (future @pb)]
-                        (let [r (deref fut deadline-ms ::timeout)]
-                          (if (= r ::timeout)
-                            (do (.destroyForcibly ^Process (:proc pb))
-                                ::timeout)
-                            r)))
-                      @pb)]
-      (cond
-        (= completed ::timeout)
-        {:exit 124 :stdout ""
-         :stderr "[anvil] timeout — subprocess killed by anvil's timeout enforcement"
-         :streamed? stream?}
+   Log-file streaming: when ctx has :log-file (java.io.File), the inline
+   path redirects stdout+stderr into it via ProcessBuilder$Redirect.
+   The backend path passes :log-file through; chengis-core's
+   DockerBackend handles streaming inside the container.
 
-        stream?
-        {:exit (:exit completed) :stdout "" :stderr "" :streamed? true}
+   Mask-values: secrets active in the dispatcher get passed through to
+   the backend as :mask-values. The inline path's masking is handled
+   higher up (in h-sh) when buffered."
+  [cmd {:keys [cwd env timeout-deadline log-file active-agent] :as ctx}]
+  (let [docker (docker-spec ctx)]
+    (cond
+      ;; AN5-3b: docker agent → chengis-core DockerBackend via the
+      ;; backend-wiring bridge. The bridge handles lifecycle + result
+      ;; shape mapping; nothing downstream changes.
+      (some? docker)
+      ((requiring-resolve 'anvil.compat.jenkins.backend-wiring/execute-via-backend)
+       cmd ctx)
 
-        :else
-        {:exit (:exit completed)
-         :stdout (or (:out completed) "")
-         :stderr (or (:err completed) "")
-         :streamed? false}))
-    (catch Exception e
-      {:exit -1 :stdout ""
-       :stderr (str "[anvil] shell-execute exception: " (.getMessage e))
-       :streamed? false})))
+      ;; Non-docker — stay on the TX9 inline path. No change in behavior.
+      :else
+      (try
+        (let [deadline-ms (when (number? timeout-deadline)
+                            (max 1 (- timeout-deadline (System/currentTimeMillis))))
+              ;; In streaming mode, both stdout AND stderr are redirected
+              ;; to the same on-disk file in append mode. We use
+              ;; ProcessBuilder$Redirect/appendTo for both streams so
+              ;; multi-step pipelines accumulate cleanly.
+              stream? (some? log-file)
+              append-redirect (when stream?
+                                (java.lang.ProcessBuilder$Redirect/appendTo log-file))
+              base-opts (cond-> {:continue true}
+                          stream?       (assoc :out append-redirect
+                                               :err append-redirect)
+                          (not stream?) (assoc :out :string :err :string)
+                          cwd           (assoc :dir (str cwd))
+                          (seq env)     (assoc :extra-env env))
+              argv ["sh" "-c" cmd]
+              pb (apply bp/process base-opts argv)
+              completed (if deadline-ms
+                          (let [fut (future @pb)]
+                            (let [r (deref fut deadline-ms ::timeout)]
+                              (if (= r ::timeout)
+                                (do (.destroyForcibly ^Process (:proc pb))
+                                    ::timeout)
+                                r)))
+                          @pb)]
+          (cond
+            (= completed ::timeout)
+            {:exit 124 :stdout ""
+             :stderr "[anvil] timeout — subprocess killed by anvil's timeout enforcement"
+             :streamed? stream?}
+
+            stream?
+            {:exit (:exit completed) :stdout "" :stderr "" :streamed? true}
+
+            :else
+            {:exit (:exit completed)
+             :stdout (or (:out completed) "")
+             :stderr (or (:err completed) "")
+             :streamed? false}))
+        (catch Exception e
+          {:exit -1 :stdout ""
+           :stderr (str "[anvil] shell-execute exception: " (.getMessage e))
+           :streamed? false})))))
 
 (defn- ok [ctx & {:keys [output stdout status-code]}]
   (cond-> {:status :ok :ctx ctx}
