@@ -217,7 +217,14 @@
              :result build-result
              :rule (:rule classified)
              :explain (:explain classified)
-             :effect-count (count effects)
+             ;; Count after enrichment so the API response matches what
+             ;; the UI's Raw-effects fold renders and what
+             ;; record-build-end! persisted on the build row. AN5-1
+             ;; synthetic effects are real effects from the operator's
+             ;; perspective — they shape the classification, they
+             ;; persist, they render.
+             :effect-count (count effects-for-persist)
+             :synthetic-effect-count (count synth-effects)
              :workspace workspace-path
              :log-path log-path})
 

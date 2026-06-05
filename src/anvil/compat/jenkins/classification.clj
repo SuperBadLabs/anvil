@@ -167,21 +167,29 @@
        (contains? productive-effect-tags (first effect))))
 
 (defn- unresolved-library?
-  "Best-effort check: would anvil's shared-libs registry recognize this
-   library name? We use anvil.compat.jenkins.shared-libs/handler-for on
-   the library's basename as a probe. Real registration happens per-step
-   (one library exports many `vars/*.groovy` step shims), so a 'no
-   handler' answer is heuristic — but for the wild-corpus cases (e.g.
-   `hibernate-jenkins-pipeline-helpers`) it's correct: NONE of the lib's
-   intended step names are in our shim registry."
+  "Is this @Library coordinate one anvil v0.3 cannot resolve?
+
+   The honest answer today is **always yes for non-blank coordinates** —
+   anvil v0.3 has no path that loads an external Groovy library from a
+   coordinate at runtime. anvil.compat.jenkins.shared-libs holds shims
+   for individual *step method names* (e.g. `checkoutSCM`,
+   `mavenBuild`) keyed by per-build usage, NOT for the
+   `@Library('coord')` directive's import names. And
+   `anvil.compat.jenkins.libraries/load-library!` requires the operator
+   to point at an already-materialized local on-disk dir per build,
+   which the wild-corpus jobs don't do.
+
+   So every `@Library('X')` an IR carries today is unresolved by
+   construction. This is correctly conservative — no false negatives
+   for the AN5-1 surfacing goal. AN5-2 will replace this with a real
+   coordinate → registry / on-disk check; until then a non-blank
+   coordinate ALWAYS classifies as unresolved.
+
+   Blank coordinates return false: a malformed IR with
+   `:libraries [{:name \"\"}]` shouldn't synthesize a misleading
+   `library.-unresolved` name."
   [lib-name]
-  (let [resolve (try (requiring-resolve
-                      'anvil.compat.jenkins.shared-libs/handler-for)
-                     (catch Throwable _ nil))]
-    (cond
-      (nil? resolve)            true  ;; can't probe → assume unresolved
-      (str/blank? lib-name)     false
-      :else (nil? (resolve lib-name)))))
+  (not (str/blank? lib-name)))
 
 (defn synthesize-shape-effects
   "Given pipeline-ir + observed effects, return diagnostic effects that
