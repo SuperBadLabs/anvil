@@ -40,7 +40,22 @@
      }
    }")
 
+(defn- clean-workspace-for-fresh-run!
+  "Copilot review on PR #41: `ensure-workspace!` is idempotent and
+   reuses the on-disk directory at `target/anvil-builds/<job>/<n>/`
+   when the build counter resets to 1 between tests. A stale
+   artifact.txt from a prior run would make `(.exists artifact)` pass
+   without proving the current build wrote anything. Delete the
+   candidate dir tree before each run so the .exists assertion has
+   real diagnostic power."
+  [job-name]
+  (let [d (clojure.java.io/file "target" "anvil-builds" job-name)]
+    (when (.exists d)
+      (doseq [f (reverse (file-seq d))]
+        (.delete f)))))
+
 (defn- run! []
+  (clean-workspace-for-fresh-run! "an5-5-agent-none-test")
   (jobs/register-job!
    {:name "an5-5-agent-none-test"
     :jenkinsfile-source agent-none-jenkinsfile})
