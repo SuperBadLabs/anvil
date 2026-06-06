@@ -36,14 +36,15 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core v0.2.1
+      - name: Install chengis-core v0.3.0
         run: |
-          # chengis-core 0.2.1 shipped with anvil 0.3.2. Pinned install —
-          # 0.2.1 adds --user $(id -u):$(id -g) to docker invocations so
-          # container-produced artifacts are host-readable (the wild-corpus
-          # dirty-dozen hunt fix). Next bump when chengis-core ships 0.3.0.
+          # chengis-core 0.3.0 shipped with anvil 0.3.3. Pinned install —
+          # 0.3.0 adds the chengis.tools.{http,archive,checksum,platform,
+          # temurin,maven,gradle,node} installer matrix that anvil's
+          # tool() step depends on. Next bump when chengis-core ships
+          # 0.4.0 (or whatever the next minor turns into).
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch v0.2.1 \
+          git clone --depth 1 --branch v0.3.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 
@@ -86,14 +87,15 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core v0.2.1
+      - name: Install chengis-core v0.3.0
         run: |
-          # chengis-core 0.2.1 shipped with anvil 0.3.2. Pinned install —
-          # 0.2.1 adds --user $(id -u):$(id -g) to docker invocations so
-          # container-produced artifacts are host-readable (the wild-corpus
-          # dirty-dozen hunt fix). Next bump when chengis-core ships 0.3.0.
+          # chengis-core 0.3.0 shipped with anvil 0.3.3. Pinned install —
+          # 0.3.0 adds the chengis.tools.{http,archive,checksum,platform,
+          # temurin,maven,gradle,node} installer matrix that anvil's
+          # tool() step depends on. Next bump when chengis-core ships
+          # 0.4.0 (or whatever the next minor turns into).
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch v0.2.1 \
+          git clone --depth 1 --branch v0.3.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 
