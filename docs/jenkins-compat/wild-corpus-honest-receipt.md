@@ -42,7 +42,7 @@ every one of those jars is host-readable.
 | apache-cxf           | `:unsupported` | `translator.body-skipped` | 9 jars | 123 MB | AN5-6 didn't cover its matrix shape (deeper nesting) |
 | eclipse-epsilon      | `:unsupported` | `translator.body-skipped` | 5 jars | 164 MB | Same shape |
 | apache-camel         | `:failure` | `:step-nonzero-exit` | 3 jars | 471 MB | **AN5-6 working — was `:unsupported translator.body-skipped` in v0.3.2** |
-| apache-activemq      | `:failure` | `:step-nonzero-exit` | 1 jar | 89 MB | Mojo execution exception (#219 AN5-7) |
+| apache-activemq      | `:failure` | `:step-nonzero-exit` | 1 jar | 89 MB | Honest enforcer-failure: host Maven 3.8.7 below required `[3.9,)` because nested-label-params agent shape degraded to LocalShell. See `an5-7-activemq-receipt.md`. |
 | hibernate-orm        | `:neutral` | `:no-effects-recorded` | 1 jar | 154 MB | **AN5-2 working — was synth `library.X-unresolved` in v0.3.2** |
 | hibernate-search     | `:neutral` | `:no-effects-recorded` | 1 jar | 56 MB | Same |
 | apache-hbase         | (still cloning when halted) | — | — | — | Repo size + harness 30-min cap |
@@ -80,9 +80,16 @@ every one of those jars is host-readable.
 - **apache-maven** — `step.mavenBuild`. The apache-maven Jenkinsfile
   calls `mavenBuild()` from a custom shared lib. Out-of-scope for
   v0.3; tracked for v0.4 if the corpus broadens.
-- **apache-activemq** — real `:step-nonzero-exit` with a Maven plugin
-  exception. Real failure to diagnose, not an anvil gap. Tracked
-  as #219 AN5-7.
+- **apache-activemq** — diagnosed: the `MojoExecutionException` was
+  `maven-enforcer-plugin` correctly rejecting host Maven 3.8.7 (POM
+  requires `[3.9,)`). Anvil ran on the host instead of in
+  `maven:3.9-eclipse-temurin-21` because the parameter-driven
+  `agent { label { label params.nodeLabel } }` shape translates to
+  `{:label "<dynamic>"}` which doesn't match `"ubuntu"` in
+  `agents.edn`. Full diagnosis in `an5-7-activemq-receipt.md`. The
+  pragmatic v0.3.3 ship behavior is unchanged (honest
+  `:failure :step-nonzero-exit` with a recorded `:agent/degraded`
+  effect); v0.4 will handle the nested-label-params shape directly.
 
 ### Raw run data
 
