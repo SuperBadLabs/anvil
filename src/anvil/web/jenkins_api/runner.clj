@@ -18,6 +18,7 @@
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.matrix-expander :as mx]
             [anvil.compat.jenkins.dispatcher :as ad]
+            [anvil.compat.jenkins.libraries :as libraries]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.env :as jenkins-env]
             [anvil.compat.jenkins.scm :as scm]
@@ -166,6 +167,13 @@
                 flat-stages (flatten-pipeline pipeline-ir)
                 flat {:stages (vec flat-stages)}
                 dispatcher (ad/make {:execute? execute?})
+                ;; AN5-2: probe every `@Library` coordinate against
+                ;; ANVIL_LIBRARIES_DIR and push :library-loaded /
+                ;; :library-unresolved effects so the AN5-1 classifier
+                ;; reads real evidence instead of synthesizing a
+                ;; "every library is unresolved" guess. No-op when the
+                ;; IR has no :libraries — the swap! never fires.
+                _ (libraries/load-into-effects! pipeline-ir (:effects dispatcher))
                 stash-root (.getAbsolutePath
                             (io/file (.getParentFile workspace) "stashes"))
                 ctx {:dispatcher dispatcher

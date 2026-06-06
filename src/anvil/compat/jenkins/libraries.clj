@@ -203,3 +203,73 @@
            (assoc (load-library! base-dir name (or version "main"))
                   :name name :ref (or version "main")))
          (:libraries pipeline-ir []))))
+
+;; ---------------------------------------------------------------------------
+;; AN5-2: surface library load outcomes into the dispatcher's effects atom
+;;
+;; Before AN5-2 the runner never called load-libraries-from-ir!. The honest
+;; classifier (AN5-1, classification.clj) treated every `@Library('X')`
+;; coordinate as "unresolved by construction" — correctly conservative
+;; for a v0.3 that had no loader wiring. AN5-2 closes that gap: the
+;; runner DOES probe each coordinate against ANVIL_LIBRARIES_DIR and
+;; pushes a real effect per library, so the classifier reads recorded
+;; evidence instead of a synthesized guess.
+;;
+;; Two effect shapes:
+;;   [:library-loaded     {:name X :ref Y :registered [step-names...]}]
+;;   [:library-unresolved {:name X :ref Y :reason KW :detail STR}]
+;;
+;; Both are productive effect tags — their presence proves the runner
+;; actually probed the coordinate. `:library-unresolved` additionally
+;; classifies the build as :unsupported with rule `library.X-unresolved`
+;; through effects->observation in classification.clj.
+;; ---------------------------------------------------------------------------
+
+(defn- result->effect
+  "Translate a load-library! result map into an effect vector for the
+   dispatcher's effects atom. Bridges the libraries.clj return shape
+   (`{:status :ok :registered [...]}` or
+    `{:status :error :reason KW :detail STR}`) onto the classifier's
+   effect-tag vocabulary."
+  [{:keys [status reason detail registered name ref]}]
+  (let [base {:name name :ref ref}]
+    (case status
+      :ok    [:library-loaded     (assoc base :registered (or registered []))]
+      :error [:library-unresolved (assoc base
+                                         :reason (or reason :library-not-found)
+                                         :detail (or detail ""))]
+      ;; Defensive: a future return shape we don't recognize is itself a
+      ;; surface event the classifier should see.
+      [:library-unresolved (assoc base
+                                  :reason :library-loader-unknown-status
+                                  :detail (str "unknown :status " (pr-str status)))])))
+
+(defn load-into-effects!
+  "AN5-2: probe every `@Library` coordinate in `pipeline-ir` against
+   the configured ANVIL_LIBRARIES_DIR (or the supplied `base-dir`) and
+   push one effect per coordinate into `effects-atom`. Returns the
+   vector of (effect-shaped) results so the caller can inspect them
+   too — but the side-effect on the atom is the load-bearing thing.
+
+   No-op when `:libraries` is empty or missing — never disturbs the
+   effects atom unnecessarily.
+
+   The runner calls this immediately AFTER dispatcher construction and
+   BEFORE `run-pipeline`, so the classifier reads the recorded results
+   alongside whatever the walk itself emits. The classifier already
+   recognizes :library-loaded as productive and :library-unresolved as
+   an unsupported-construct rule; AN5-1's walk-shape synthesizer skips
+   its `library.X-unresolved` synthetic fallback for any X that already
+   has a real effect, preventing double-reporting."
+  ([pipeline-ir effects-atom]
+   (load-into-effects!
+    pipeline-ir effects-atom
+    (or (System/getenv "ANVIL_LIBRARIES_DIR")
+        (str (System/getProperty "user.home") "/.anvil/libraries"))))
+  ([pipeline-ir effects-atom base-dir]
+   (let [libs (:libraries pipeline-ir)]
+     (when (seq libs)
+       (let [results (load-libraries-from-ir! pipeline-ir base-dir)
+             effects (mapv result->effect results)]
+         (swap! effects-atom into effects)
+         effects)))))
