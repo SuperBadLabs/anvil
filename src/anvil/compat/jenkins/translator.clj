@@ -13,7 +13,8 @@
   (:require [clojure.string :as str]
             [anvil.compat.jenkins.groovy :as g]
             [anvil.compat.jenkins.ir :as ir]
-            [anvil.compat.jenkins.jenkinsfile-preamble :as preamble])
+            [anvil.compat.jenkins.jenkinsfile-preamble :as preamble]
+            [anvil.compat.jenkins.matrix-declarative :as mx-decl])
   (:import [org.codehaus.groovy.ast ASTNode CodeVisitorSupport GroovyCodeVisitor]
            [org.codehaus.groovy.ast.expr ArgumentListExpression
             ClosureExpression
@@ -107,7 +108,8 @@
 ;; with the raw args preserved.
 ;; ---------------------------------------------------------------------------
 
-(declare translate-call translate-steps-body map-arg-kv list-arg-strings)
+(declare translate-call translate-steps-body map-arg-kv list-arg-strings
+         translate-stages translate-stage)
 
 (defn- args->plain
   "Reduce :cdata args to plain Clojure values for the :jenkins/unknown
@@ -750,14 +752,62 @@
         post-call  (find-call body "post")
         agent-call (find-call body "agent")
         env-call   (find-call body "environment")
+        ;; AN5-6: declarative matrix-block-inside-stage. apache-camel and
+        ;; apache-cxf put `matrix { axes {} stages {} }` directly inside
+        ;; a stage body (no top-level `steps` call). Before AN5-6 this
+        ;; produced `{:name X :steps []}` which the classifier read as
+        ;; `:unsupported/:body-skipped`. We detect the matrix child and
+        ;; attach the parsed matrix IR; `translate-stages` (below)
+        ;; expands cells into one materialized stage per cell.
+        matrix-call (find-call body "matrix")
         steps (when steps-call
                 (translate-steps-body (closure-arg steps-call) source closure-objs))
         post (when post-call
-               (translate-post-body (closure-arg post-call) source closure-objs))]
+               (translate-post-body (closure-arg post-call) source closure-objs))
+        matrix-ir (when matrix-call
+                    (mx-decl/parse-matrix-call
+                     matrix-call stage-name
+                     ;; Inner-stage parser closes over our translator
+                     ;; bindings so matrix.stages bodies get the same
+                     ;; treatment as top-level stages (including
+                     ;; recursive matrix expansion if anyone nests).
+                     (fn [stages-call]
+                       (translate-stages stages-call source closure-objs))))]
     (cond-> {:name stage-name :steps (vec (or steps []))}
       agent-call (assoc :agent (translate-agent-block agent-call))
       env-call   (assoc :environment (translate-environment (closure-arg env-call) source closure-objs))
-      post       (assoc :post post))))
+      post       (assoc :post post)
+      matrix-ir  (assoc :matrix matrix-ir))))
+
+(defn- expand-matrix-stage
+  "AN5-6: a stage carrying a `:matrix` IR becomes N materialized
+   cell-stages — one per axis combination. Each cell's display name
+   includes the axis tuple; each cell's steps are the concatenation
+   of the inner matrix.stages' steps; each cell's `:environment`
+   merges the parent stage's environment with the cell's axis values
+   (axis values lose to explicit parent env to match Jenkins's
+   precedence). The parent stage's `:agent` and `:post` are
+   propagated to every cell.
+
+   This is the v0.3.3 first cut: cells run serially in IR order, no
+   per-cell agent override. v0.4 may add per-cell agent and parallel
+   execution; the IR shape stays stable."
+  [parent-stage matrix-ir]
+  (let [cells (mx-decl/expand-matrix matrix-ir)
+        parent-env (or (:environment parent-stage) {})
+        parent-agent (:agent parent-stage)
+        parent-post (:post parent-stage)]
+    (mapv
+     (fn [{:keys [axes env stages]}]
+       (let [cell-label (mx-decl/cell-name axes)
+             cell-name (str (:name parent-stage) " [" cell-label "]")
+             all-steps (vec (mapcat :steps stages))]
+         (cond-> {:name cell-name
+                  :steps all-steps
+                  :environment (merge env parent-env)}
+           parent-agent (assoc :agent parent-agent)
+           parent-post (assoc :post parent-post))))
+     cells)))
 
 (defn- translate-stages
   [stages-call source closure-objs]
@@ -765,7 +815,12 @@
         body (body-calls closure)]
     (->> body
          (filter #(= "stage" (:name %)))
-         (mapv #(translate-stage % source closure-objs)))))
+         (mapcat (fn [stage-call]
+                   (let [stage (translate-stage stage-call source closure-objs)]
+                     (if-let [matrix-ir (:matrix stage)]
+                       (expand-matrix-stage stage matrix-ir)
+                       [stage]))))
+         vec)))
 
 ;; ---------------------------------------------------------------------------
 ;; Scripted Pipeline support
