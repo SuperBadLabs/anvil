@@ -59,7 +59,12 @@
    noise) and :stage/enter / :stage/leave / :agent/* (structural markers
    that fire even on empty walks)."
   (into #{:sh :bat :unknown :tool-unresolved :credential-unresolved
-          :script-failed :scripted-eval-failed}
+          :script-failed :scripted-eval-failed
+          ;; AN5-2: real probes against ANVIL_LIBRARIES_DIR. Both shapes
+          ;; count as productive — they prove the runner actually
+          ;; attempted to resolve the @Library coordinate instead of
+          ;; silently doing nothing.
+          :library-loaded :library-unresolved}
         artifact-effects))
 
 (def ^:private unsupported-effects
@@ -101,6 +106,22 @@
 (defn- record-credential-unresolved-effect [obs [_tag {:keys [credential-id]}]]
   (result/record-unresolved-credential obs (or credential-id "unknown-credential")))
 
+(defn- record-library-loaded-effect
+  "AN5-2: a successful @Library probe. Counted as a recorded effect
+   (so the synth pass treats the build as productive) but does not
+   move the verdict toward unsupported — it's the load-bearing 'we
+   tried and it worked' marker."
+  [obs [_tag _]]
+  (result/record-effect obs :library-loaded))
+
+(defn- record-library-unresolved-effect
+  "AN5-2: a real failed @Library probe. Maps to `library.X-unresolved`
+   in the unsupported-construct rule space, parallel to
+   `tool.X-unresolved` and `credential.X-unresolved`."
+  [obs [_tag {:keys [name]}]]
+  (result/record-unsupported-construct
+   obs (str "library." (or (some-> name str) "unknown") "-unresolved")))
+
 (defn- record-artifact-effect [obs [tag _]]
   (result/record-effect obs (keyword (str (name tag) "-recorded"))))
 
@@ -130,6 +151,9 @@
          (= :tool-unresolved tag) (record-tool-unresolved-effect obs effect)
          (= :credential-unresolved tag)
                                   (record-credential-unresolved-effect obs effect)
+         (= :library-loaded tag)  (record-library-loaded-effect obs effect)
+         (= :library-unresolved tag)
+                                  (record-library-unresolved-effect obs effect)
          (contains? unsupported-effects tag)
                                   (record-unknown-effect obs effect)
          (contains? artifact-effects tag)
@@ -169,27 +193,42 @@
 (defn- unresolved-library?
   "Is this @Library coordinate one anvil v0.3 cannot resolve?
 
-   The honest answer today is **always yes for non-blank coordinates** —
-   anvil v0.3 has no path that loads an external Groovy library from a
-   coordinate at runtime. anvil.compat.jenkins.shared-libs holds shims
-   for individual *step method names* (e.g. `checkoutSCM`,
-   `mavenBuild`) keyed by per-build usage, NOT for the
-   `@Library('coord')` directive's import names. And
-   `anvil.compat.jenkins.libraries/load-library!` requires the operator
-   to point at an already-materialized local on-disk dir per build,
-   which the wild-corpus jobs don't do.
+   AN5-2 wired the runner to probe each coordinate against
+   ANVIL_LIBRARIES_DIR before dispatch; the result lands as a real
+   `[:library-loaded ...]` or `[:library-unresolved ...]` effect that
+   `effects->observation` already handles. So for any coordinate the
+   runner attested (loaded OR unresolved), the synthetic
+   `library.X-unresolved` fallback below would be double-reporting —
+   `library-already-attested?` filters those out.
 
-   So every `@Library('X')` an IR carries today is unresolved by
-   construction. This is correctly conservative — no false negatives
-   for the AN5-1 surfacing goal. AN5-2 will replace this with a real
-   coordinate → registry / on-disk check; until then a non-blank
-   coordinate ALWAYS classifies as unresolved.
+   That leaves the legacy fallback: a coordinate that NO runner pass
+   attested (e.g. the runner was never wired — older tests, raw
+   classifier exercise without AN5-2 wiring). For those, we keep the
+   AN5-1 honest-conservative answer: every non-blank coordinate is
+   unresolved by construction. A real wired runner would have pushed
+   an effect; absence of one means the loader didn't run, and the
+   loader is the only thing that could have changed our minds.
 
    Blank coordinates return false: a malformed IR with
    `:libraries [{:name \"\"}]` shouldn't synthesize a misleading
    `library.-unresolved` name."
   [lib-name]
   (not (str/blank? lib-name)))
+
+(defn- library-already-attested?
+  "AN5-2: did the runner already push a real :library-loaded or
+   :library-unresolved effect for this coordinate? If so, the synth
+   pass should NOT emit a duplicate `library.X-unresolved` for it.
+
+   The match is by `:name` only; ref/version tracking is intentionally
+   left to the real effect's payload (the synth fallback never knew
+   ref either)."
+  [lib-name effects]
+  (some (fn [eff]
+          (and (vector? eff)
+               (#{:library-loaded :library-unresolved} (first eff))
+               (= lib-name (:name (second eff)))))
+        effects))
 
 (defn synthesize-shape-effects
   "Given pipeline-ir + observed effects, return diagnostic effects that
@@ -221,7 +260,12 @@
                                             effects))
         lib-effects (when-not any-productive?
                       (for [{:keys [name]} libs
-                            :when (unresolved-library? name)]
+                            :when (and (unresolved-library? name)
+                                       ;; AN5-2: skip libs the runner
+                                       ;; already attested via a real
+                                       ;; :library-loaded or
+                                       ;; :library-unresolved effect.
+                                       (not (library-already-attested? name effects)))]
                         [:unknown {:name (str "library." name "-unresolved")
                                    :anvil/synthetic? true
                                    :anvil/source :an5-1
