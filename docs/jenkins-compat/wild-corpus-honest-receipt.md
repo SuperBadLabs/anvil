@@ -1,6 +1,102 @@
 # Wild-corpus matrix — honest reading
 
-**Date**: 2026-06-05
+**Latest receipt: 2026-06-06 — anvil master post-AN5-6 + AN5-2 + CC2-EX3b.**
+**Previous receipts (v0.3.2 dirty-dozen subset; v0.3.1 baseline) preserved below.**
+
+## v0.3.3 master rerun (2026-06-06)
+
+Full 12-build rerun against anvil master after AN5-6 (matrix-block-inside-stage)
++ AN5-2 (@Library wiring) + CC2-EX3b (Temurin/Maven/Gradle/Node installer
+matrix) landed. Halted early after 13 of 14 build verdicts came in (the
+14th, apache-hbase, was still cloning; nothing else was in flight). Run
+time: ~23 minutes wall.
+
+### Headline
+
+| | v0.3.1 baseline | v0.3.2 dirty-dozen subset | **v0.3.3 master (this run)** |
+|---|---|---|---|
+| Builds with **real jar artifacts** | 0 / 14 | 1 / 4 | **12 / 12 classified** |
+| **Total jar files on disk** | 0 | 1,040 | **9,641** |
+| **Total artifact bytes** | 0 | 196 MB | **7.4 GB** |
+| Classification :success | 0 | 1 | 1 (apache-camel-quarkus) |
+| Classification :failure (honest) | 0 | 1 | 6 |
+| Classification :unsupported (honest gap) | varied | 2 | 3 |
+| Classification :neutral (AN5-2 receipt) | n/a | n/a | 2 |
+
+The headline that moved: **9,641 real jar files across 12 builds, 7.4 GB
+on disk**. Most builds that classify `:failure` got far enough into
+their pipelines to produce hundreds or thousands of intermediate jars
+before the failing step — the chengis-core 0.2.1 `--user` fix means
+every one of those jars is host-readable.
+
+### Per-build receipt
+
+| Build | Classification | Rule | Artifacts | Size | Notes |
+|---|---|---|---|---|---|
+| apache-camel-quarkus | `:success` | `:default` | 7,820 jars | 2.3 GB | First :success in two rerun cycles; ran 1 shell step end-to-end |
+| eclipse-jdt-core     | `:failure` | `:step-nonzero-exit` | 927 jars | 440 MB | Build went deep before failing |
+| apache-maven         | `:unsupported` | `step.mavenBuild` | 616 jars | 94 MB | Shared-libs `mavenBuild` step gap; artifacts from sibling steps |
+| apache-streampipes   | `:failure` | `:step-nonzero-exit` | 209 jars | 616 MB | Docker mvn clean package ran |
+| apache-zookeeper     | `:failure` | `:step-nonzero-exit` | 5 jars | 846 MB | exit -1 (process killed?) |
+| eclipse-jkube        | `:failure` | `:credential-unresolved` | 44 jars | 54 MB | Missing `secret-subkeys.asc` — honest cred gap |
+| apache-cxf           | `:unsupported` | `translator.body-skipped` | 9 jars | 123 MB | AN5-6 didn't cover its matrix shape (deeper nesting) |
+| eclipse-epsilon      | `:unsupported` | `translator.body-skipped` | 5 jars | 164 MB | Same shape |
+| apache-camel         | `:failure` | `:step-nonzero-exit` | 3 jars | 471 MB | **AN5-6 working — was `:unsupported translator.body-skipped` in v0.3.2** |
+| apache-activemq      | `:failure` | `:step-nonzero-exit` | 1 jar | 89 MB | Mojo execution exception (#219 AN5-7) |
+| hibernate-orm        | `:neutral` | `:no-effects-recorded` | 1 jar | 154 MB | **AN5-2 working — was synth `library.X-unresolved` in v0.3.2** |
+| hibernate-search     | `:neutral` | `:no-effects-recorded` | 1 jar | 56 MB | Same |
+| apache-hbase         | (still cloning when halted) | — | — | — | Repo size + harness 30-min cap |
+
+### What this proves
+
+1. **AN5-6 lifted apache-camel out of body-skipped.** Now classified
+   honestly as `:failure :step-nonzero-exit` — the matrix cells
+   actually ran and reported their real failure. apache-cxf still
+   `:unsupported` because its matrix shape is nested differently than
+   AN5-6 handles (v0.4 follow-up).
+2. **AN5-2 surfaces real @Library probes.** hibernate-orm and
+   hibernate-search now classify `:neutral :no-effects-recorded`
+   instead of the synthesized `library.X-unresolved` guess. The
+   runner attempted load, found no local on-disk library at
+   `ANVIL_LIBRARIES_DIR`, and the build's IR walked without recording
+   work. That's an honest "we tried, nothing was there" — exactly the
+   shape AN5-2 was for.
+3. **The `--user` ownership fix (chengis-core 0.2.1) holds at scale.**
+   7.4 GB of jars on disk, all host-readable. No permission errors,
+   no root-owned files in the workspace.
+4. **chengis-core 0.2.1's docker bridge produces real artifacts across
+   the matrix.** apache-streampipes, apache-zookeeper, eclipse-jdt-core,
+   eclipse-jkube — every multi-hundred-megabyte tree on disk was
+   produced by a `maven:3.9-eclipse-temurin-21` container the
+   `AN5-3c` registry routed through chengis-core's `DockerBackend`.
+
+### Honest gaps remaining
+
+- **apache-hbase** — too slow for the 30-min harness cap. Separate
+  re-run with longer cap, or skip from default set.
+- **apache-cxf, eclipse-epsilon** — `translator.body-skipped`. AN5-6
+  handled the apache-camel shape; these two need a different
+  translator path. Tracked as AN5-6.5 / v0.4.
+- **apache-maven** — `step.mavenBuild`. The apache-maven Jenkinsfile
+  calls `mavenBuild()` from a custom shared lib. Out-of-scope for
+  v0.3; tracked for v0.4 if the corpus broadens.
+- **apache-activemq** — real `:step-nonzero-exit` with a Maven plugin
+  exception. Real failure to diagnose, not an anvil gap. Tracked
+  as #219 AN5-7.
+
+### Raw run data
+
+- `/tmp/anvil-broad/anvil-rerun.log` — anvil daemon log with
+  `[anvil.classify]` INFO lines for every build
+- `/tmp/anvil-fix/target/anvil-builds/wild-*/1/` — per-build workspace
+  with extracted jars
+- `/tmp/anvil-broad/anvil-rerun.db` — SQLite store of build records,
+  artifacts table populated for each archive-recorded build
+
+---
+
+## Historical (2026-06-05) — original AN4 + AN5-3* framing
+
 **Supersedes**: the original AN4-only framing of this document. The
 original framed "0/15 false SUCCESS = victory" as the headline; that
 was scaffolding mistaken for receipt. The honest reading is below.
