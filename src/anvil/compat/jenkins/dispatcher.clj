@@ -223,8 +223,26 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- h-sh [d step ctx]
-  (let [cmd (:script step)
-        cwd (:cwd ctx "/workspace")]
+  (let [original-cmd (:script step)
+        cwd (:cwd ctx "/workspace")
+        ;; AN5-4: when :anvil.features/mvn-deploy-degrade is on, detect
+        ;; standalone `deploy` lifecycle phases in mvn commands and
+        ;; rewrite them to `package` so wild-corpus builds produce
+        ;; jars in target/ instead of crashing at the deploy step
+        ;; with HTTP 401 from apache.snapshots/etc.
+        mvn-degrade-on? (try
+                          ((requiring-resolve 'anvil.features/enabled?)
+                           :mvn-deploy-degrade)
+                          (catch Throwable _ false))
+        degrade ((requiring-resolve
+                   'anvil.compat.jenkins.deploy-degrade/maybe-degrade)
+                  original-cmd mvn-degrade-on?)
+        cmd (if (:degraded? degrade) (:rewritten degrade) original-cmd)
+        _ (when (:degraded? degrade)
+            (log-effect d [:mvn/deploy-degraded
+                           {:original (:original degrade)
+                            :rewritten (:rewritten degrade)
+                            :reason (:reason degrade)}]))]
     (cond
       ;; Real execution mode (TX9 phase 1). Spawn a subprocess, capture
       ;; i/o. In buffered mode (no ctx :log-file) we emit per-line
