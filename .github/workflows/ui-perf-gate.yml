@@ -47,12 +47,12 @@ jobs:
           lein: latest
           bb: latest
 
-      # chengis-core 0.2.1 shipped with anvil 0.3.2. Pinned install.
+      # chengis-core 0.3.0 shipped with anvil 0.3.3. Pinned install.
 
-      - name: Install chengis-core v0.2.1
+      - name: Install chengis-core v0.3.0
         run: |
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch v0.2.1 \
+          git clone --depth 1 --branch v0.3.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 

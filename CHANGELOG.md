@@ -1,5 +1,107 @@
 # anvil — changelog
 
+## 0.3.3 — The Receipt Release (2026-06-06)
+
+The "0.3.2 made the artifact axis non-zero with a 4-build subset
+producing 1,040 jars; 0.3.3 generalizes the receipt across the full
+wild-corpus" release. Two translator fixes, one classifier fix, the
+new chengis-core 0.3.0 tool-installer matrix, and two diagnostic
+receipts — all locked in by a full re-run.
+
+**Headline (verified by AN5-RERUN against master, 2026-06-06)**:
+
+| | v0.3.1 baseline | v0.3.2 (subset) | **v0.3.3 (full)** |
+|---|---|---|---|
+| Real jar files on disk | 0 | 1,040 | **9,641** |
+| Total bytes | 0 | 196 MB | **7.4 GB** |
+| Honestly classified | varied | 4 of 4 | **12 of 12** |
+| `:success` | 0 | 1 | 1 (apache-camel-quarkus, 7,820 jars) |
+| `:failure` (honest exit codes) | 0 | 1 | 6 |
+| `:unsupported` (real gap) | varied | 2 | 3 |
+| `:neutral` (honest @Library probe) | n/a | n/a | 2 |
+
+Depends on **chengis-core 0.3.0** (the tool-installer matrix —
+Temurin + Maven + Gradle + Node + shared helpers).
+
+### AN5 family — Wider corpus, honester gaps
+
+- **AN5-6 (#43)** — `translate-stage` now recognizes
+  `matrix { axes {} stages {} }` blocks placed directly inside a
+  declarative stage body (no top-level `steps {}` sibling). Before
+  AN5-6 these came out as `{:name X :steps []}` and the AN5-1
+  classifier reported `:unsupported/:body-skipped`. Apache-camel and
+  apache-cxf both hit this shape in the wild corpus. After AN5-6,
+  apache-camel reclassifies to `:failure :step-nonzero-exit` — the
+  matrix cells actually run and report their honest exit codes (3
+  jars / 471 MB on disk before the failure point). apache-cxf still
+  body-skipped because its matrix shape is nested deeper than AN5-6
+  handles; tracked as v0.4 AN5-6.5.
+- **AN5-2 (#44)** — `anvil.compat.jenkins.libraries/load-into-effects!`
+  probes every `@Library` coordinate against `ANVIL_LIBRARIES_DIR`
+  before the runner dispatches and pushes one `[:library-loaded …]`
+  or `[:library-unresolved …]` effect per coordinate into the
+  dispatcher's effects atom. The classifier reads these as productive
+  (no synth fallback) and maps `:library-unresolved` to
+  `library.X-unresolved` in the unsupported-construct rule space,
+  parallel to `tool.X-unresolved` and `credential.X-unresolved`.
+  hibernate-orm and hibernate-search now classify
+  `:neutral :no-effects-recorded` (honest "we tried, nothing was
+  there") instead of the synthesized `library.X-unresolved` guess
+  from AN5-1.
+
+### Dependency bumps
+
+- `[superbadlabs/chengis-core "0.2.1"]` → `"0.3.0"` to consume the
+  new tool-installer matrix. anvil's `tool('jdk_X_latest')` step
+  already routes through `chengis.tools/resolve!` (AN4-3); with
+  0.3.0 on the classpath operators can register the four installers
+  at startup and the resolve call returns real on-disk paths.
+
+### Diagnostic receipts
+
+- **AN5-RERUN (#45)** — Full 12-build wild-corpus re-run receipt
+  added at `docs/jenkins-compat/wild-corpus-honest-receipt.md`. The
+  9,641-jar / 7.4-GB headline. Per-build breakdown with classification,
+  artifacts, and remaining-gap notes.
+- **AN5-7 (#46)** — Apache-activemq "MojoExecutionException"
+  root-cause: NOT a Maven plugin crash. `maven-enforcer-plugin`
+  correctly refusing host Maven 3.8.7 because the parent POM requires
+  `[3.9,)`. Build ran on the host instead of in
+  `maven:3.9-eclipse-temurin-21` because the
+  `agent { label { label params.nodeLabel } }` (parameter-driven
+  nested-label) shape translates to `{:label "<dynamic>"}` which
+  doesn't match `"ubuntu"` in agents.edn. Full diagnosis at
+  `docs/jenkins-compat/an5-7-activemq-receipt.md`. v0.3.3 ship
+  behavior stays as-is (honest `:failure :step-nonzero-exit` with a
+  recorded `:agent/degraded` effect); v0.4 will handle the
+  parameter-driven label shape.
+
+### Upgrade notes
+
+- chengis-core dep bumped 0.2.1 → 0.3.0; consuming operators get the
+  new `chengis.tools.{http,archive,checksum,platform,temurin,maven,gradle,node}`
+  surface for free.
+- Operators wanting real-on-disk `tool('jdk_17_latest')` resolution
+  register installers at startup:
+
+  ```clojure
+  (require '[chengis.tools :as tools]
+           '[chengis.tools.temurin :as temurin]
+           '[chengis.tools.maven   :as maven]
+           '[chengis.tools.gradle  :as gradle]
+           '[chengis.tools.node    :as node])
+  (tools/register-installer! (temurin/temurin-installer))
+  (tools/register-installer! (maven/maven-installer))
+  (tools/register-installer! (gradle/gradle-installer))
+  (tools/register-installer! (node/node-installer))
+  ```
+
+- `ANVIL_LIBRARIES_DIR` is the new env that AN5-2 probes for
+  `@Library` resolution; defaults to `~/.anvil/libraries`. Operators
+  with on-disk shared library trees see `:library-loaded` effects;
+  those without see `:library-unresolved` (an explicit signal, not a
+  guess).
+
 ## 0.3.2 — Real Artifacts Release (2026-06-05)
 
 The "0.3.1 told you honestly whether the build worked; 0.3.2 makes

@@ -1,4 +1,4 @@
-(defproject superbadlabs/anvil "0.3.2"
+(defproject superbadlabs/anvil "0.3.3"
   :description
   "anvil — a free, OSS, single-team CI server that runs your Jenkinsfile.
 
@@ -32,7 +32,7 @@
   ;; pinned git tag (per RS2 of the extraction board — Clojars deferred
   ;; until external demand justifies it). CI workflows do the same dance
   ;; as a prelude step before lein test / lein run.
-  :dependencies [[superbadlabs/chengis-core "0.2.1"]
+  :dependencies [[superbadlabs/chengis-core "0.3.0"]
 
                  [org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
