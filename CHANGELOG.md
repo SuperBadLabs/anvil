@@ -1,5 +1,103 @@
 # anvil — changelog
 
+## 0.3.2 — Real Artifacts Release (2026-06-05)
+
+The "0.3.1 told you honestly whether the build worked; 0.3.2 makes
+more of them actually work" release. v0.3.1 closed the false-success
+hole in the classifier. v0.3.2 keeps the honesty bar and adds the
+plumbing that turns honest `:unsupported` / `:failure` results into
+honest `:success` results with real jar files on disk — proved
+end-to-end by the wild-corpus dirty-dozen hunt:
+**1,040 real jar files (196 MB) from apache-camel-quarkus** in 841
+seconds. First measurable wild-corpus build with non-zero artifacts.
+
+Depends on **chengis-core 0.2.1** (the `--user $(id -u):$(id -g)`
+fix that makes container-produced artifacts host-readable).
+
+### AN5 family — Wire the execution layer end-to-end
+
+- **AN5-3 (#35)** — `anvil.compat.jenkins.backend-wiring` bridges
+  the dispatcher's `shell-execute` shape to chengis-core's
+  `ExecutionBackend` protocol. `backend-for-ctx` returns LocalShell
+  or DockerBackend based on the active agent. Per-step mode as the
+  first cut; per-build mode lands in 0.4.
+- **AN5-3b (#36)** — `shell-execute`'s docker branch now routes
+  through the AN5-3 bridge into chengis-core's `DockerBackend`
+  instead of anvil's vendored Docker shim. The LocalShell path is
+  unchanged. One protocol, one source of truth for container
+  execution.
+- **AN5-3c (#37)** — `anvil.agents.registry/merge-defaults`
+  surfaces `:docker {:image X}` config when `:executor :docker`,
+  so label-based agents (`agent { label 'ubuntu-latest' }`) flow
+  through the registry into the docker bridge. Defensive: rejects
+  nil/blank `:image`.
+- **AN5-3d (#38)** — `resources/anvil/config/wild-corpus-agents.edn`
+  maps wild-corpus label conventions to runnable images:
+  `ubuntu`/`ubuntu-latest` → `maven:3.9-eclipse-temurin-21`,
+  `Hadoop` → `maven:3.9-eclipse-temurin-17`,
+  `migration` → `eclipse-temurin:21-jdk`. Plus the AN5-RERUN
+  harness (`scripts/wild-corpus-rerun.bb`) with the
+  `trigger-build!` bb-script signature fix.
+- **AN5-4 (#40)** — `anvil.compat.jenkins.deploy-degrade` —
+  feature-flagged `h-sh` rewrites standalone
+  `mvn ... deploy ...` calls to `mvn ... package ...` BEFORE
+  subprocess spawn. Wild-corpus Jenkinsfiles call
+  `mvn clean deploy` expecting Apache's deploy credentials;
+  without them, the deploy step crashes with HTTP 401 and no
+  jar lands despite all earlier phases succeeding. With
+  `:anvil.features/mvn-deploy-degrade true`, the rewrite
+  happens, jar lands in `target/`, `archiveArtifacts` picks it
+  up. Emits a `[:mvn/deploy-degraded]` effect so the rewrite is
+  operator-visible. Token-based shell parsing (not regex) so
+  `-Ddeploy=...` and similar do NOT trigger.
+- **AN5-5 (#41)** — Lockdown test for `agent none + steps {}`.
+  Honest finding: the simple shape already works; the
+  `:unsupported` results for apache-camel and apache-cxf come
+  from `matrix { ... }` blocks *inside* stage bodies, not from
+  `agent none` at top level. That cleanup is AN5-6 in 0.3.3;
+  this release locks in the simple shape so it can't regress.
+
+### Bug fixes
+
+- **#39** — `scripts/wild-corpus-rerun.bb`'s `trigger-build!`
+  argument list was misaligned, causing the dirty-dozen harness
+  to trigger a different job than requested. Surfaced live during
+  the hunt; fixed in-band.
+
+### Verified against
+
+- Wild-corpus dirty-dozen hunt (4-build subset, full v0.3.2
+  plumbing enabled — `mvn-deploy-degrade` on, `--user` flag on,
+  docker label routing through registry):
+  - `apache-camel-quarkus` → `:success`, **1,040 real jar files,
+    196 MB**, 841 seconds. **First non-zero real-artifact axis
+    result in wild-corpus history.**
+  - `apache-activemq` → `:failure :step-nonzero-exit`
+    (MojoExecutionException — honest failure, root-cause in
+    0.3.3 AN5-7).
+  - `apache-camel` → `:unsupported` (translator skipped stage
+    body — matrix-block-inside-stage; 0.3.3 AN5-6 unblocks).
+  - `apache-cxf` → `:unsupported` (same matrix-inside-stage
+    shape).
+
+  Full 12-build re-run lands in
+  `docs/jenkins-compat/wild-corpus-honest-receipt.md` alongside
+  0.3.3 once AN5-6 + AN5-7 land.
+
+### Upgrade notes
+
+- `:dependencies` bumps
+  `[superbadlabs/chengis-core "0.2.0"]` → `"0.2.1"` for the
+  `--user` ownership fix.
+- New optional feature flag `:anvil.features/mvn-deploy-degrade`
+  in `anvil.edn`. Closed by default; flip to `true` when running
+  Apache-foundation Jenkinsfiles without Apache deploy creds and
+  you want jar artifacts instead of 401 crashes.
+- New optional config:
+  `resources/anvil/config/wild-corpus-agents.edn` is a *worked
+  example* for label→image mapping; copy/adapt as
+  `anvil-agents.edn` for your own corpus.
+
 ## 0.3.1 — Honest Classification Release (2026-06-05)
 
 The "0.3.0 was the parity layer; 0.3.1 is the honesty layer" release.
