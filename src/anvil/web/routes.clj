@@ -21,6 +21,7 @@
             [anvil.web.views.build-form :as build-form]
             [anvil.web.views.job-create-page :as job-create]
             [anvil.web.views.secrets-page :as secrets-page]
+            [anvil.web.views.flaky-page :as flaky-page]
             [anvil.features :as features]
             [anvil.web.console-dl :as console-dl]
             [anvil.web.build-actions :as build-actions]
@@ -155,6 +156,13 @@
    ["/secrets"
     {:get (features/wrap-feature :secrets secrets-page/page)
      :name ::secrets}]
+   ;; v0.4 T1.3 — Flaky-tests dashboard.  Gated by :flaky feature flag
+   ;; (closed-by-default per AV4-7).  Lists the top flaky tests
+   ;; across the instance over a rolling 30-build window.
+   ["/flaky"
+    {:get (features/wrap-feature :flaky
+                                 (fn [req] (html (flaky-page/page req))))
+     :name ::flaky}]
    ;; anvil-internal JSON
    ["/api"
     ["/status" {:get handler-api-status :name ::api-status}]

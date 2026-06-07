@@ -268,6 +268,40 @@
            job-name build-number])
          (mapv result-row->map))))
 
+(defn recent-flaky-window
+  "Cross-build minimal projection driving the v0.4 /flaky dashboard
+   (T1.3).  Returns one row per `(test_id, build_number)` pair across
+   the most recent `limit` builds (instance-wide; or filtered to a
+   job when `job-name` is non-nil), preserving only what
+   `anvil.flaky/rank-by-flake-rate` needs:
+
+     {:test-id <str> :build-number <n> :flaky? <bool>}
+
+   Only the latest attempt of each (build, test) is returned — the
+   sub-select picks max(attempt_number) so a flaky-then-passed test
+   shows as :flaky? true (the latest attempt is the passing one, and
+   write-flaky-flags! has stamped flaky_bool=1 across all attempts
+   for that group)."
+  [job-name limit]
+  (when-let [ds (db/datasource)]
+    (let [base-sql "SELECT r.test_id, r.build_number, r.flaky_bool
+                    FROM anvil_test_results r
+                    WHERE r.attempt_number = (
+                      SELECT MAX(attempt_number) FROM anvil_test_results
+                      WHERE job_name = r.job_name
+                        AND build_number = r.build_number
+                        AND test_id = r.test_id
+                    )"
+          where-job (when job-name "AND r.job_name = ?")
+          tail "ORDER BY r.build_number DESC LIMIT ?"
+          sql (str base-sql " " (or where-job "") " " tail)
+          params (if job-name [job-name limit] [limit])]
+      (->> (jdbc/execute! ds (into [sql] params))
+           (mapv (fn [row]
+                   {:test-id      (:anvil_test_results/test_id row)
+                    :build-number (:anvil_test_results/build_number row)
+                    :flaky?       (= 1 (:anvil_test_results/flaky_bool row))}))))))
+
 (defn write-flaky-flags!
   "Write `{test-id → retry-count}` map back across all per-attempt rows
    for a build.  Every row with a test_id in the map gets
