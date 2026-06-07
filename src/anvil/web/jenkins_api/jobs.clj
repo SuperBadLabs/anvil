@@ -38,6 +38,7 @@
    Concurrency: a single atom holds everything. swap! handles CAS on
    build creation; reads are lock-free."
   (:require [clojure.string :as str]
+            [taoensso.timbre :as log]
             [anvil.events.bus :as bus]
             [anvil.storage.db :as db]
             [anvil.storage.jobs :as persist])
@@ -330,7 +331,39 @@
                    :result result
                    :duration-ms @dur-atom
                    :color (result->color result false)
-                   :ts (Instant/now)}))
+                   :ts (Instant/now)})
+    ;; v0.4 T1.4 — flaky-test detection runs once per build, after
+    ;; build-done, gated by :anvil.features/flaky. Reads per-attempt
+    ;; rows from test_results (populated by h-junit's per-retry
+    ;; scan, T1.5), runs anvil.flaky/detect-flaky-tests, writes the
+    ;; flaky_bool / retry_count flags back, and publishes one
+    ;; :flaky-flagged event per flagged test on the [:build j n]
+    ;; topic so the per-build widget can swap from (analyzing…) to
+    ;; the flagged list. Wrapped in try/catch — flaky detection
+    ;; never gates the build's own classification or notification path.
+    (try
+      (when ((requiring-resolve 'anvil.features/enabled?) :flaky)
+        (let [find-all      (requiring-resolve 'anvil.storage.test-results/find-results-all-attempts)
+              detect        (requiring-resolve 'anvil.flaky/detect-flaky-tests)
+              write-flags!  (requiring-resolve 'anvil.storage.test-results/write-flaky-flags!)
+              topic-build   (requiring-resolve 'anvil.events.topics/topic-build)
+              evt-flagged   (requiring-resolve 'anvil.events.topics/evt-flaky-flagged)
+              rows  (find-all job-name build-number)
+              flaky (detect rows)]
+          (write-flags! job-name build-number flaky)
+          (when (seq flaky)
+            (bus/publish! (topic-build job-name build-number)
+                          {:type @evt-flagged
+                           :job-name job-name
+                           :build-number build-number
+                           :count (count flaky)
+                           :tests (mapv (fn [[test-id retry-count]]
+                                          {:test-id test-id
+                                           :retry-count retry-count})
+                                        flaky)
+                           :ts (Instant/now)}))))
+      (catch Throwable t
+        (log/warn t "anvil.flaky: detect-after-build-done failed (non-fatal)"))))
   nil)
 
 (defn console-log-for
