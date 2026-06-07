@@ -6,7 +6,7 @@
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.dispatcher :as ad]))
 
-(defn- run-jenkinsfile [src & {:keys [canned]}]
+(defn- run-jenkinsfile [src & {:keys [canned fail-attempts]}]
   (let [ir (t/parse src)
         stage-block (for [s (:stages ir)]
                       {:name (:name s)
@@ -15,7 +15,8 @@
         cleanup-block (when-let [c (get-in ir [:post :cleanup])]
                         [{:name "<cleanup>" :steps c}])
         flat {:stages (vec (concat stage-block cleanup-block))}
-        d (ad/make {:sh-canned (atom (or canned {}))})
+        d (ad/make (cond-> {:sh-canned (atom (or canned {}))}
+                     fail-attempts (assoc :sh-fail-attempts (atom fail-attempts))))
         result (d/run-pipeline flat d {:cwd "/workspace"})]
     {:result result :effects @(:effects d) :ir ir :dispatcher d}))
 
@@ -93,8 +94,8 @@
         (is (= 5    (-> effects (nth 0) second :time)))
         (is (= "MINUTES" (-> effects (nth 0) second :unit)))))))
 
-(deftest retry-records-and-runs-body-test
-  (testing "retry records enter/leave; body steps run (single attempt in v1)"
+(deftest retry-records-enter-attempt-leave-on-first-success
+  (testing "v0.4 T1.5 — retry runs the body; default h-sh returns :ok, loop exits after attempt 1"
     (let [{:keys [effects]}
           (run-jenkinsfile
            "pipeline { agent any; stages { stage('S') { steps {
@@ -103,8 +104,71 @@
               }
             } } } }")]
       (let [types (mapv first effects)]
-        (is (= [:retry/enter :sh :retry/leave] types))
-        (is (= 3 (-> effects (nth 0) second :count)))))))
+        (is (= [:retry/enter :sh :retry/attempt :retry/leave] types)
+            "h-retry is now a real loop; one attempt logged before leave")
+        (is (= 3 (-> effects (nth 0) second :count))
+            "configured count is recorded on enter")
+        (is (= 1   (-> effects (nth 2) second :index))
+            "first attempt indexed 1")
+        (is (= :ok (-> effects (nth 2) second :status))
+            "first attempt succeeded — sh test-double returns :ok")
+        (is (= 1   (-> effects (nth 3) second :attempts))
+            "single attempt, no retry needed")
+        (is (= :ok (-> effects (nth 3) second :outcome))
+            "outcome is :ok at the leave")))))
+
+(deftest retry-loops-when-body-fails-then-succeeds
+  (testing "v0.4 T1.5 — body fails once then passes; retry loop captures both attempts + the recovery"
+    (let [{:keys [effects]}
+          (run-jenkinsfile
+           "pipeline { agent any; stages { stage('S') { steps {
+              retry(3) {
+                sh 'flaky'
+              }
+            } } } }"
+           :fail-attempts {"flaky" 1})]
+      (let [types  (mapv first effects)
+            shes   (filter #(= :sh (first %)) effects)
+            attempts (filter #(= :retry/attempt (first %)) effects)
+            leave  (last effects)]
+        (is (= [:retry/enter :sh :retry/attempt
+                :sh :retry/attempt :retry/leave]
+               types)
+            "second :sh + :retry/attempt cycle proves the loop ran twice")
+        (is (= 2 (count shes))
+            "body was re-invoked once after the failure")
+        (is (= [1 2] (mapv #(:attempt (second %)) shes))
+            "each :sh effect carries its 1-based attempt index from ctx")
+        (is (= [:failed :ok] (mapv #(:status (second %)) attempts))
+            "first attempt :failed, second attempt :ok")
+        (is (= :retry/leave (first leave)))
+        (is (= 2 (-> leave second :attempts)))
+        (is (= :ok (-> leave second :outcome)))))))
+
+(deftest retry-exhausts-all-attempts-when-body-never-succeeds
+  (testing "v0.4 T1.5 — body fails forever; retry runs N attempts then propagates failure"
+    (let [{:keys [effects result]}
+          (run-jenkinsfile
+           "pipeline { agent any; stages { stage('S') { steps {
+              retry(2) {
+                sh 'dead'
+              }
+            } } } }"
+           :fail-attempts {"dead" 999})]
+      (let [shes     (filter #(= :sh (first %)) effects)
+            attempts (filter #(= :retry/attempt (first %)) effects)
+            leave    (->> effects (filter #(= :retry/leave (first %))) first)]
+        (is (= 2 (count shes))
+            "exactly N body invocations")
+        (is (= [1 2] (mapv #(:attempt (second %)) shes)))
+        (is (every? #(= :failed (:status (second %))) attempts)
+            "every attempt failed")
+        (is (= 2 (-> leave second :attempts)))
+        (is (= :failed (-> leave second :outcome)))
+        (is (= :failed (:status result))
+            "exhausted retry propagates failure up to the orchestrator
+             — fixes the historic v1-no-op behavior where retry could
+             mask a build that actually never recovered")))))
 
 ;; ---------------------------------------------------------------------------
 ;; parallel

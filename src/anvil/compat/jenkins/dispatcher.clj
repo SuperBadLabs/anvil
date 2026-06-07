@@ -298,11 +298,35 @@
       ;; up to TX8 relies on this. canned-stdout supports tests that
       ;; want to simulate returnStdout without subprocess execution.
       :else
-      (do (log-effect d [:sh {:cmd cmd :cwd cwd}])
-          (cond
-            (:return-stdout? step) (ok ctx :stdout (canned-stdout d cmd))
-            (:return-status? step) (ok ctx :status-code 0)
-            :else                  (ok ctx :output cmd))))))
+      (let [;; v0.4 T1.5 — test hook for retry/loop semantics: the
+            ;; :sh-fail-attempts atom maps cmd-string → number of
+            ;; failures to emit before succeeding (decremented on
+            ;; each call). When the count hits zero the cmd starts
+            ;; returning :ok again. Lets tests model a flaky command
+            ;; that succeeds after N retries without spinning a real
+            ;; subprocess. Untouched by production (atom is always
+            ;; nil unless the test fixture passes it).
+            fail-atom (:sh-fail-attempts d)
+            remaining (when fail-atom (get @fail-atom cmd 0))
+            fail-this? (and remaining (pos? remaining))
+            ;; v0.4 T1.5 — :attempt field only present when the sh
+            ;; runs inside a retry wrapper, so the historic effect
+            ;; shape stays exactly `{:cmd cmd :cwd cwd}` for every
+            ;; non-retry caller (TX4-TU6 tests all assert on this).
+            base-effect {:cmd cmd :cwd cwd}
+            sh-effect (if-let [a (:current-retry-attempt ctx)]
+                        (assoc base-effect :attempt a)
+                        base-effect)]
+        (log-effect d [:sh sh-effect])
+        (when fail-this?
+          (swap! fail-atom update cmd dec))
+        (cond
+          fail-this?
+          {:status :failed :error :sh-non-zero :exit 1 :output cmd :ctx ctx}
+
+          (:return-stdout? step) (ok ctx :stdout (canned-stdout d cmd))
+          (:return-status? step) (ok ctx :status-code 0)
+          :else                  (ok ctx :output cmd))))))
 
 (defn- h-bat [d step ctx]
   (log-effect d [:bat {:cmd (:script step)}])
@@ -339,13 +363,19 @@
             evt-test-completed (requiring-resolve 'anvil.events.topics/evt-test-completed)
             globs (mapv str/trim (str/split (str results-glob) #","))
             tree (scan ws {:globs globs})
-            summary (record! jn bn tree)]
+            ;; v0.4 T1.5 — when the junit step runs inside a retry
+            ;; wrapper, h-retry threads `:current-retry-attempt` into
+            ;; ctx. Pass it through so record-build-results! produces
+            ;; per-attempt rows (anvil.flaky/detect substrate).
+            attempt (or (:current-retry-attempt ctx) 1)
+            summary (record! jn bn tree {:attempt-number attempt})]
         (log-effect d [:junit
                        (merge (select-keys summary
                                            [:tests :passed :failed :errored
                                             :skipped :duration-ms :parse-errors])
                               {:results results-glob
-                               :scanned-files (:scanned-files tree)})])
+                               :scanned-files (:scanned-files tree)
+                               :attempt attempt})])
         (try
           (publish! (topic-build jn bn)
                     {:type @evt-test-completed
@@ -356,7 +386,8 @@
                      :failed (:failed summary)
                      :errored (:errored summary)
                      :skipped (:skipped summary)
-                     :duration-ms (:duration-ms summary)})
+                     :duration-ms (:duration-ms summary)
+                     :attempt attempt})
           (catch Throwable t
             (log/warn t "h-junit: SSE publish failed (non-fatal)")))
         (ok ctx))
@@ -864,14 +895,56 @@
       (log-effect this [:timeout/leave])
       (propagate-or-ok after #(dissoc % :timeout-deadline)))))
 
-(defn- h-retry [this step ctx]
-  (let [n (or (:count step) 1)
-        body (or (:body step) [])]
+(defn- h-retry
+  "Jenkins-Pipeline `retry(N) { body }` — run body up to N times,
+   stopping at the first :ok.  Each attempt gets its 1-based index
+   threaded into ctx via `:current-retry-attempt`, so wrappers below
+   that care (h-junit's scanner pass to record-build-results! at
+   attempt-number, v0.4 T1.5) can produce per-attempt rows.
+
+   Effects:
+     [:retry/enter   {:count N}]                 — once, on entry
+     [:retry/attempt {:index K :status …}]       — once per attempt
+                                                   (K = 1..N), status
+                                                   is :ok or :failed
+     [:retry/leave   {:attempts K :outcome …}]   — once, on exit;
+                                                   outcome is :ok if
+                                                   any attempt
+                                                   succeeded, :failed
+                                                   if all N failed
+
+   Outer-ctx `:current-retry-attempt` (if any) is restored on exit so
+   nested retries don't leak the inner counter."
+  [this step ctx]
+  (let [n           (max 1 (or (:count step) 1))
+        body        (or (:body step) [])
+        outer-attempt (:current-retry-attempt ctx)]
     (log-effect this [:retry/enter {:count n}])
-    ;; v1: single attempt — retry semantics come with executor integration (TX9).
-    (let [after (run-body this body ctx)]
-      (log-effect this [:retry/leave])
-      (propagate-or-ok after identity))))
+    (loop [attempt 1
+           last-result nil]
+      (let [attempt-ctx (assoc ctx :current-retry-attempt attempt)
+            r (run-body this body attempt-ctx)
+            status (:status r)]
+        (log-effect this [:retry/attempt {:index attempt :status status}])
+        (cond
+          (= :ok status)
+          (do
+            (log-effect this [:retry/leave {:attempts attempt :outcome :ok}])
+            (propagate-or-ok r
+                             #(if outer-attempt
+                                (assoc % :current-retry-attempt outer-attempt)
+                                (dissoc % :current-retry-attempt))))
+
+          (< attempt n)
+          (recur (inc attempt) r)
+
+          :else  ;; final attempt failed
+          (do
+            (log-effect this [:retry/leave {:attempts attempt :outcome :failed}])
+            (propagate-or-ok r
+                             #(if outer-attempt
+                                (assoc % :current-retry-attempt outer-attempt)
+                                (dissoc % :current-retry-attempt)))))))))
 
 (defn- h-properties
   "TX11E: `properties([buildDiscarder(...), disableConcurrentBuilds(...)])`.
@@ -1171,7 +1244,7 @@
         :jenkins/agent-stage-enter (h-agent-stage-enter this step ctx)
         :jenkins/agent-stage-leave (h-agent-stage-leave this step ctx)))))
 
-(defrecord AnvilJenkinsDispatcher [effects sh-canned secrets execute?]
+(defrecord AnvilJenkinsDispatcher [effects sh-canned secrets execute? sh-fail-attempts]
   d/StepDispatcher
   (supports? [_ step] (contains? step-types (:type step)))
   (dispatch  [this step ctx] (dispatch-step this step ctx))
@@ -1180,17 +1253,23 @@
 (defn make
   "Construct a fresh AnvilJenkinsDispatcher.
 
-   `:effects`    chronological side-effects vector (atom)
-   `:sh-canned`  cmd-string → canned-stdout map (atom) for tests
-   `:secrets`    set of strings to redact from logged effects (atom);
-                 mutated by withCredentials scope-wrapper handlers
-   `:execute?`   if true, sh/bat actually subprocess-execute (TX9).
-                 Default false — record-only, matching the spike +
-                 TX4-TX8 test surface."
+   `:effects`           chronological side-effects vector (atom)
+   `:sh-canned`         cmd-string → canned-stdout map (atom) for tests
+   `:secrets`           set of strings to redact from logged effects
+                        (atom); mutated by withCredentials handlers
+   `:execute?`          if true, sh/bat actually subprocess-execute (TX9).
+                        Default false — record-only, matching the
+                        spike + TX4-TX8 test surface.
+   `:sh-fail-attempts`  v0.4 T1.5 test hook (atom of cmd → remaining
+                        failures). When h-sh sees a cmd whose count is
+                        > 0 it returns :failed and decrements; tests
+                        use this to exercise retry-loop semantics
+                        without spinning a real subprocess. nil
+                        (default) → never injects failure."
   ([] (make {}))
-  ([{:keys [effects sh-canned secrets execute?]
+  ([{:keys [effects sh-canned secrets execute? sh-fail-attempts]
      :or {effects (atom [])
           sh-canned (atom {})
           secrets (atom #{})
           execute? false}}]
-   (->AnvilJenkinsDispatcher effects sh-canned secrets execute?)))
+   (->AnvilJenkinsDispatcher effects sh-canned secrets execute? sh-fail-attempts)))
