@@ -9,6 +9,7 @@
    - `all-event-types` is the union of existing + reserved; nothing
      drifts."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.set]
             [anvil.events.bus :as bus]
             [anvil.events.topics :as t]))
 
@@ -38,15 +39,29 @@
     (is (= :schedule-fired t/evt-schedule-fired))
     (is (= :secret-rotated t/evt-secret-rotated))))
 
+(deftest v0-4-reserved-event-types
+  (testing "v0.4 T1.4 / T2.2 / T3.4 / T4.5 reservations"
+    (is (= :flaky-flagged          t/evt-flaky-flagged))
+    (is (= :container-step-started t/evt-container-step-started))
+    (is (= :ai-suggested           t/evt-ai-suggested))
+    (is (= :provenance-attested    t/evt-provenance-attested))))
+
 (deftest reserved-set-and-all-types-stay-in-sync
-  (testing "reserved-v0-3 is exactly the 5 new T-1..7 names"
+  (testing "reserved-v0-3 is exactly the 5 T1.5/T2.2/T3.3/T5.3/T6.7 names"
     (is (= #{:test-completed :problem-found :checks-updated
              :schedule-fired :secret-rotated}
            t/reserved-v0-3)))
-  (testing "all-event-types is the union of existing + reserved (no gaps)"
-    (is (= 11 (count t/all-event-types))
-        "6 existing + 5 reserved = 11")
-    (is (every? t/all-event-types t/reserved-v0-3))))
+  (testing "reserved-v0-4 is exactly the 4 leapfrog tranche names"
+    (is (= #{:flaky-flagged :container-step-started
+             :ai-suggested :provenance-attested}
+           t/reserved-v0-4)))
+  (testing "all-event-types is the union of existing + both reservation sets (no gaps)"
+    (is (= 15 (count t/all-event-types))
+        "6 existing + 5 v0.3 + 4 v0.4 = 15")
+    (is (every? t/all-event-types t/reserved-v0-3))
+    (is (every? t/all-event-types t/reserved-v0-4))
+    (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-4))
+        "v0.3 and v0.4 reservations must not overlap")))
 
 (deftest reserved-topics-are-subscribable-today
   (testing "T1-T7 widgets can register listeners now even though the producer is months away"
