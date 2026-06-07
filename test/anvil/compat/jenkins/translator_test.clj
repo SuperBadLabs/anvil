@@ -494,3 +494,71 @@
       (is (= ["Main / A" "Main / B"] (mapv :name stages)))
       (is (every? #(= "maven-21" (-> % :agent :label)) stages)
           "every flattened child inherits the wrapper's agent label"))))
+
+;; ---------------------------------------------------------------------------
+;; #243 — container() arg-shape coverage.  Surfaced by the v0.4 T2.6
+;; fixture dogfood: `container(image: 'X')` was yielding :image nil
+;; because translate-container did `(get … "image")` (string key) on a
+;; map-arg-kv result that uses keyword keys.  These tests lock all
+;; three forms parser shape → translator :image lift.
+;; ---------------------------------------------------------------------------
+
+(defn- container-step
+  "Pull the first stage's first step out of an IR (always a
+   :jenkins/container in these tests)."
+  [src]
+  (-> (t/parse src) :stages first :steps first))
+
+(deftest container-positional-string-arg-extracts-image
+  (testing "container('img') { … } — positional string lifts to :image"
+    (let [step (container-step
+                "pipeline { agent any; stages { stage('S') { steps {
+                   container('node:20') { sh 'npm test' }
+                 } } } }")]
+      (is (= :jenkins/container (:type step)))
+      (is (= "node:20" (:image step))
+          "positional string arg sets :image — TX5/T2.1 baseline"))))
+
+(deftest container-map-form-arg-extracts-image
+  (testing "container(image: 'img') { … } — map-form named arg lifts to :image"
+    (let [step (container-step
+                "pipeline { agent any; stages { stage('S') { steps {
+                   container(image: 'eclipse-temurin:21') { sh 'java -version' }
+                 } } } }")]
+      (is (= :jenkins/container (:type step)))
+      (is (= "eclipse-temurin:21" (:image step))
+          "#243 — map-form arg now resolves to the image string instead of nil")))
+  (testing "extra map keys are ignored, :image still resolves"
+    (let [step (container-step
+                "pipeline { agent any; stages { stage('S') { steps {
+                   container(image: 'maven:3.9', shell: '/bin/bash') { sh 'mvn -v' }
+                 } } } }")]
+      (is (= "maven:3.9" (:image step))
+          "shell:/bin/bash etc. don't block :image lookup"))))
+
+(deftest container-both-arg-forms-produce-identical-ir
+  (testing "positional and map-form yield byte-identical IR for the container step"
+    (let [pos (container-step
+               "pipeline { agent any; stages { stage('S') { steps {
+                  container('python:3.12') { sh 'pytest' }
+                } } } }")
+          mp  (container-step
+               "pipeline { agent any; stages { stage('S') { steps {
+                  container(image: 'python:3.12') { sh 'pytest' }
+                } } } }")]
+      (is (= pos mp)
+          "the two surface forms parse to the same IR — operators choose
+           whichever Jenkinsfile style they prefer without observable
+           behavior difference downstream"))))
+
+(deftest container-non-resolvable-arg-still-emits-step-with-nil-image
+  (testing "container(env.X) { … } — non-string/non-map arg → :image nil + body preserved"
+    (let [step (container-step
+                "pipeline { agent any; stages { stage('S') { steps {
+                   container(env.CONTAINER) { sh 'work' }
+                 } } } }")]
+      (is (= :jenkins/container (:type step)))
+      (is (nil? (:image step))
+          "honest gap — dispatcher emits :container/missing-image at runtime
+           so the build doesn't silently drop the body"))))
+

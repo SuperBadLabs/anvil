@@ -27,11 +27,9 @@
    the ctx mutation actually reaches the leaf step — the contract
    h-sh + AN5-3b rely on for DockerBackend routing.
 
-   Note: the map-form arg shape (`container(image: 'X') { … }`) is a
-   known-honest gap in the current translator (yields :image nil); it
-   would be a translator-fix ticket, not a test-track one.  T2.6
-   stays scoped to fixtures that exercise behavior anvil already
-   ships."
+   The map-form arg shape (`container(image: 'X') { … }`) is locked
+   down in `translator_test.clj` per #243 — the bug T2.6 surfaced
+   has its fix-test there at the translator-unit level."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.translator :as t]

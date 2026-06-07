@@ -413,7 +413,12 @@
                 (and (map? first-arg) (= :const (:type first-arg)))
                 (:value first-arg)
                 (and (map? first-arg) (= :map (:type first-arg)))
-                (some-> (map-arg-kv first-arg) (get "image"))
+                ;; #243 — map-arg-kv returns keyword keys; the old
+                ;; `(get … "image")` string-key lookup always missed
+                ;; and yielded `:image nil` for the
+                ;; `container(image: 'X') { … }` form.  Surfaced by
+                ;; the v0.4 T2.6 fixture-writing dogfood.
+                (:image (map-arg-kv first-arg))
                 :else nil)
         body-closure (closure-arg call)
         body (when body-closure
