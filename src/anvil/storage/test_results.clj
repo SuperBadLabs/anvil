@@ -30,17 +30,25 @@
 
 (defn- result-row->map [row]
   (when row
-    {:id            (:anvil_test_results/id row)
-     :job-name      (:anvil_test_results/job_name row)
-     :build-number  (:anvil_test_results/build_number row)
-     :test-id       (:anvil_test_results/test_id row)
-     :name          (:anvil_test_results/test_name row)
-     :class         (:anvil_test_results/test_class row)
-     :status        (keyword (:anvil_test_results/status row))
-     :duration-ms   (:anvil_test_results/duration_ms row)
-     :failure-msg   (:anvil_test_results/failure_msg row)
-     :failure-type  (:anvil_test_results/failure_type row)
-     :failure-trace (:anvil_test_results/failure_trace row)}))
+    {:id             (:anvil_test_results/id row)
+     :job-name       (:anvil_test_results/job_name row)
+     :build-number   (:anvil_test_results/build_number row)
+     :test-id        (:anvil_test_results/test_id row)
+     :name           (:anvil_test_results/test_name row)
+     :class          (:anvil_test_results/test_class row)
+     :status         (keyword (:anvil_test_results/status row))
+     :duration-ms    (:anvil_test_results/duration_ms row)
+     :failure-msg    (:anvil_test_results/failure_msg row)
+     :failure-type   (:anvil_test_results/failure_type row)
+     :failure-trace  (:anvil_test_results/failure_trace row)
+     ;; v0.4 T1.2 — flaky-test substrate. attempt-number is always
+     ;; ≥ 1; flaky? is nil until anvil.flaky/detect runs over the
+     ;; build, then false/true; retry-count denormalizes
+     ;; (max(attempt) − 1) for the (build, test) group.
+     :attempt-number (:anvil_test_results/attempt_number row)
+     :flaky?         (when-let [v (:anvil_test_results/flaky_bool row)]
+                       (= 1 v))
+     :retry-count    (:anvil_test_results/retry_count row)}))
 
 (defn- summary-row->map [row]
   (when row
@@ -58,7 +66,7 @@
 ;; Writes
 ;; ---------------------------------------------------------------------------
 
-(defn- insert-case-row [job-name build-number c]
+(defn- insert-case-row [job-name build-number attempt-number c]
   [job-name
    build-number
    (:test-id c)
@@ -68,37 +76,54 @@
    (or (:duration-ms c) 0)
    (:failure-msg c)
    (:failure-type c)
-   (:failure-trace c)])
+   (:failure-trace c)
+   attempt-number])
 
 (defn record-build-results!
   "Persist a parsed surefire tree (the output of
    `anvil.compat.junit/parse-surefire-tree`) for `(job-name,
    build-number)`. Replaces any previous test rows for this build
-   (retries / re-scans) under a single transaction so partial
-   inserts aren't observable.
+   *for the same attempt-number* under a single transaction so
+   partial inserts aren't observable.
+
+   Optional arg `opts`:
+     :attempt-number — 1-based attempt index within this build
+                       (default 1). Multi-attempt rows are appended
+                       so anvil.flaky/detect (T1.1) can spot
+                       passed-on-retry. When called without :attempt-
+                       number, behaves as before: single attempt,
+                       prior rows wiped, single-attempt summary
+                       overwritten.
 
    Returns the persisted summary map."
-  [job-name build-number tree]
+  ([job-name build-number tree]
+   (record-build-results! job-name build-number tree {}))
+  ([job-name build-number tree {:keys [attempt-number]
+                                :or {attempt-number 1}}]
   (let [ds (db/datasource)
         cases (mapcat :cases (:suites tree))
         totals (:totals tree)
         parse-error-count (count (:parse-errors tree))]
     (when ds
       (jdbc/with-transaction [tx ds]
-        ;; Idempotent: scan-then-rescan replaces prior rows.
+        ;; Idempotent within (build, attempt): scan-then-rescan
+        ;; replaces prior rows FOR THIS ATTEMPT only.  Other attempts
+        ;; in the same build (earlier retries) survive — that's the
+        ;; substrate the flaky analyzer needs.
         (jdbc/execute-one!
          tx
          ["DELETE FROM anvil_test_results
-           WHERE job_name = ? AND build_number = ?"
-          job-name build-number])
+           WHERE job_name = ? AND build_number = ? AND attempt_number = ?"
+          job-name build-number attempt-number])
         (when (seq cases)
           (jdbc/execute-batch!
            tx
            "INSERT INTO anvil_test_results
              (job_name, build_number, test_id, test_name, test_class,
-              status, duration_ms, failure_msg, failure_type, failure_trace)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-           (mapv #(insert-case-row job-name build-number %) cases)
+              status, duration_ms, failure_msg, failure_type, failure_trace,
+              attempt_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+           (mapv #(insert-case-row job-name build-number attempt-number %) cases)
            {}))
         (jdbc/execute-one!
          tx
@@ -121,13 +146,14 @@
           parse-error-count])))
     {:job-name job-name
      :build-number build-number
+     :attempt-number attempt-number
      :tests (:tests totals)
      :passed (:passed totals)
      :failed (:failed totals)
      :errored (:errored totals)
      :skipped (:skipped totals)
      :duration-ms (:duration-ms totals)
-     :parse-errors parse-error-count}))
+     :parse-errors parse-error-count})))
 
 ;; ---------------------------------------------------------------------------
 ;; Reads
@@ -197,3 +223,80 @@
             ORDER BY build_number DESC LIMIT ?"
            job-name limit])
          (mapv summary-row->map))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 T1.2 — per-attempt / flaky support
+;; ---------------------------------------------------------------------------
+
+(defn find-results-all-attempts
+  "All persisted case rows for a build *including every retry attempt*,
+   ordered by class → name → attempt_number ASC.  The flaky analyzer
+   consumes this to spot passed-on-retry sequences."
+  [job-name build-number]
+  (when-let [ds (db/datasource)]
+    (->> (jdbc/execute!
+          ds
+          ["SELECT * FROM anvil_test_results
+            WHERE job_name = ? AND build_number = ?
+            ORDER BY test_class, test_name, attempt_number ASC"
+           job-name build-number])
+         (mapv result-row->map))))
+
+(defn find-flaky-tests
+  "Rows in this build that were flagged :flaky? true (passed-on-retry).
+   The dashboard's per-build flaky widget hits this.
+
+   Returns one row per flaky test_id (the latest attempt — the
+   succeeding one); the row's :retry-count tells the UI how many
+   prior attempts failed."
+  [job-name build-number]
+  (when-let [ds (db/datasource)]
+    (->> (jdbc/execute!
+          ds
+          ;; Sub-select picks each flaky test's max(attempt_number)
+          ;; — that's the attempt that finally passed.
+          ["SELECT * FROM anvil_test_results r
+            WHERE r.job_name = ? AND r.build_number = ?
+              AND r.flaky_bool = 1
+              AND r.attempt_number = (
+                SELECT MAX(attempt_number) FROM anvil_test_results
+                WHERE job_name = r.job_name
+                  AND build_number = r.build_number
+                  AND test_id = r.test_id
+              )
+            ORDER BY r.test_class, r.test_name"
+           job-name build-number])
+         (mapv result-row->map))))
+
+(defn write-flaky-flags!
+  "Write `{test-id → retry-count}` map back across all per-attempt rows
+   for a build.  Every row with a test_id in the map gets
+   `flaky_bool=1` + the named `retry_count`.  Rows for test_ids NOT
+   in the map are flipped to `flaky_bool=0` so a re-detect after
+   wiped retries clears stale flags.
+
+   Returns the count of rows touched."
+  [job-name build-number test-id->retry-count]
+  (when-let [ds (db/datasource)]
+    (jdbc/with-transaction [tx ds]
+      ;; Clear prior flags for this build (idempotent re-detect).
+      (jdbc/execute-one!
+       tx
+       ["UPDATE anvil_test_results
+         SET flaky_bool = 0, retry_count = 0
+         WHERE job_name = ? AND build_number = ?"
+        job-name build-number])
+      (reduce
+       (fn [acc [test-id retry-count]]
+         (let [n (-> (jdbc/execute-one!
+                      tx
+                      ["UPDATE anvil_test_results
+                        SET flaky_bool = 1, retry_count = ?
+                        WHERE job_name = ? AND build_number = ?
+                          AND test_id = ?"
+                       retry-count job-name build-number test-id])
+                     :next.jdbc/update-count
+                     (or 0))]
+           (+ acc n)))
+       0
+       test-id->retry-count))))
