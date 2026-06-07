@@ -20,9 +20,16 @@
                (features/set! f (boolean (get before f false)))))))))
 
 (def ^:private v0-4-leapfrog-flags
-  "The four leapfrog reservations made by the v0.4 board T0.2.
-   Closed-by-default until each tranche merges."
-  #{:flaky :container-step :ai-authoring :provenance})
+  "The v0.4 board reservations: 4 leapfrog tranches from T0.2 plus
+   :dockerfile-agent added by AN6-3 (the dockerfile-agent honesty
+   ticket).  All closed-by-default until each tranche merges or
+   the AN6 ship lands a stable runtime.
+
+   We disj all of these from `known-features` when locking down
+   the v0.3 tranche set so the v0.3 test stays stable when v0.4
+   adds more reservations."
+  #{:flaky :container-step :ai-authoring :provenance
+    :dockerfile-agent})
 
 (deftest known-features-covers-the-seven-v0-3-tranches
   (testing "v0.3 board T1–T7 each have a reserved flag"

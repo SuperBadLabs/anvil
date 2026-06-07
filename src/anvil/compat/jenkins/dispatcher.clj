@@ -1099,28 +1099,36 @@
     (= :none (:type a))       (agent-registry/resolve-label nil)
     :else                     nil))
 
+(defn- dockerfile-agent-feature-on? []
+  (try
+    ((requiring-resolve 'anvil.features/enabled?) :dockerfile-agent)
+    (catch Throwable _ false)))
+
 (defn- unhonored-container-agent-shape
   "Returns a keyword naming the unhonored agent shape when `:agent step`
    is a container/cluster shape that this runner cannot actually execute
    in the current mode, or nil when the agent is honored.
 
    Today's honor table:
-     mode             | docker        | dockerfile    | kubernetes
-     -----------------+---------------+---------------+-------------
-     :execute? true   | honored       | UNHONORED     | UNHONORED
-     :execute? false  | UNHONORED     | UNHONORED     | UNHONORED
+     mode             | docker        | dockerfile               | kubernetes
+     -----------------+---------------+--------------------------+-------------
+     :execute? true   | honored       | honored if flag on (AN6-3) | UNHONORED
+     :execute? false  | UNHONORED     | UNHONORED                | UNHONORED
 
    Rationale: in record-only mode every container agent is bypassed by
    construction (the dispatcher records shell calls without forking
    subprocesses). In execute mode, `agent { docker }` runs via
    `build-docker-args` against the host `docker` CLI — so it's honored.
-   `dockerfile` and `kubernetes` have no runtime in anvil today; emitting
-   `:agent/degraded` for them is the AN4-1-style honesty signal that
+   `dockerfile` is honored when the v0.4 AN6-3 flag is on AND we're in
+   execute mode (the build needs a real docker daemon to materialize
+   the image). `kubernetes` has no runtime in anvil today; emitting
+   `:agent/degraded` for it is the AN4-1-style honesty signal that
    tells the classifier these were silently skipped."
   [d agent-spec]
   (let [execute? (:execute? d)]
     (cond
-      (and (map? agent-spec) (:dockerfile agent-spec))   :dockerfile
+      (and (map? agent-spec) (:dockerfile agent-spec)
+           (not (and execute? (dockerfile-agent-feature-on?))))  :dockerfile
       (and (map? agent-spec) (= :kubernetes (:type agent-spec))) :kubernetes
       (and (map? agent-spec) (:docker agent-spec)
            (not execute?))                                :docker
@@ -1165,6 +1173,32 @@
         merged-env (if resolved (merge old-env (:env resolved)) old-env)
         label (or (:label (:agent step))
                   (some-> (:agent step) :type name))
+        ;; v0.4 AN6-3 — `agent { dockerfile { filename '…' } }`. When
+        ;; the feature is on AND we're in execute mode, materialize
+        ;; the image via anvil.tools.dockerfile and upgrade
+        ;; ctx :active-agent to {:docker {:image <tag>}}. The
+        ;; existing AN5-3 DockerBackend bridge then routes h-sh.
+        dockerfile-spec (:dockerfile (:agent step))
+        df-result (when (and dockerfile-spec
+                             (:execute? d)
+                             (dockerfile-agent-feature-on?))
+                    (let [filename (or (:filename dockerfile-spec) "Dockerfile")
+                          ws (:workspace ctx)
+                          ensure! (requiring-resolve 'anvil.tools.dockerfile/ensure-image!)
+                          r (ensure! ws filename {:execute? true})]
+                      (log-effect d [(if (:cached? r)
+                                       :dockerfile/image-cached
+                                       :dockerfile/image-built)
+                                     {:tag (:tag r)
+                                      :exit (:exit r)
+                                      :filename filename
+                                      :workspace ws
+                                      :missing-dockerfile? (boolean (:missing-dockerfile? r))}])
+                      r))
+        dockerfile-upgrade (when (and df-result (zero? (:exit df-result)))
+                             {:docker {:image (:tag df-result)}
+                              :resolved-from-dockerfile
+                              (or (:filename dockerfile-spec) "Dockerfile")})
         ;; AN5-3c: when the registry resolves the label to a docker
         ;; executor (e.g. agents.edn maps "ubuntu" → {:executor :docker
         ;; :image "eclipse-temurin:21"}), upgrade ctx :active-agent
@@ -1175,7 +1209,8 @@
         ;; and anvil's pluggable executors — the unlock for the
         ;; wild-corpus dirty-dozen, all of which use agent { label
         ;; '...' } rather than agent { docker { ... } }.
-        active-agent (or (and resolved
+        active-agent (or dockerfile-upgrade
+                         (and resolved
                               (= :docker (:executor resolved))
                               (:docker resolved)
                               {:docker (:docker resolved)
