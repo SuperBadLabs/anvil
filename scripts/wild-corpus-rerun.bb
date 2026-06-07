@@ -44,21 +44,37 @@
 (def anvil-url (or (System/getenv "ANVIL_URL") "http://localhost:8765"))
 (def corpus-root (or (System/getenv "WILD_CORPUS_ROOT") "/tmp/anvil-broad"))
 
-;; The 12 buildable wild-corpus entries. apache-cassandra (dockerfile,
-;; harness TIMEOUT) and eclipse-mojarra (k8s + YAML, harness TIMEOUT)
-;; are intentionally excluded — see wild-corpus-agents.edn header.
+;; The buildable wild-corpus entries.
+;;
+;; v0.4 AN6-3 opt-in: apache-cassandra (`agent { dockerfile … }`) is
+;; back in the set now that AN6-3 honors the dockerfile-agent shape.
+;; Set `:requires-flag` on entries that need a non-default feature
+;; flag turned on in `anvil.edn`:
+;;   :anvil.features/dockerfile-agent true   ; for apache-cassandra
+;; AND boot the daemon with `:execute? true` so docker build runs.
+;; Without the flag, anvil v0.4.0 honestly classifies the build as
+;; :unsupported :runtime-unsupported per the AN4-2 contract.
+;;
+;; eclipse-mojarra stays excluded (k8s + YAML; needs the kubernetes
+;; agent runtime which is v0.6 territory per the v0.4 board).
 (def dirty-dozen
   [{:name "apache-activemq"      :scm-url "https://github.com/apache/activemq.git" :branch "main"}
    {:name "apache-camel"         :scm-url "https://github.com/apache/camel.git" :branch "main"}
    {:name "apache-camel-quarkus" :scm-url "https://github.com/apache/camel-quarkus.git" :branch "main"}
+   {:name "apache-cassandra"     :scm-url "https://github.com/apache/cassandra.git" :branch "trunk"
+    :requires-flag :dockerfile-agent
+    :notes "AN6-3 dockerfile-agent. Bump --max-minutes ≥ 60 for first cold-cache run."}
    {:name "apache-cxf"           :scm-url "https://github.com/apache/cxf.git" :branch "main"}
-   {:name "apache-hbase"         :scm-url "https://github.com/apache/hbase.git" :branch "master"}
-   {:name "apache-maven"         :scm-url "https://github.com/apache/maven.git" :branch "master"}
+   {:name "apache-hbase"         :scm-url "https://github.com/apache/hbase.git" :branch "master"
+    :notes "Long-runner — bump --max-minutes ≥ 90 (AN6-6)."}
+   {:name "apache-maven"         :scm-url "https://github.com/apache/maven.git" :branch "master"
+    :notes "AN6-4: shared-lib mavenBuild step is :unsupported with workaround in docs/jenkins-compat/an6-4-mavenbuild-receipt.md"}
    {:name "apache-streampipes"   :scm-url "https://github.com/apache/streampipes.git" :branch "dev"}
    {:name "apache-zookeeper"     :scm-url "https://github.com/apache/zookeeper.git" :branch "master"}
    {:name "eclipse-epsilon"      :scm-url "https://github.com/eclipse/epsilon.git" :branch "main"}
    {:name "eclipse-jdt-core"     :scm-url "https://github.com/eclipse-jdt/eclipse.jdt.core.git" :branch "master"}
-   {:name "eclipse-jkube"        :scm-url "https://github.com/eclipse-jkube/jkube.git" :branch "master"}
+   {:name "eclipse-jkube"        :scm-url "https://github.com/eclipse-jkube/jkube.git" :branch "master"
+    :notes "AN6-5: secret-subkeys.asc credential workaround in docs/secrets/gpg-subkey.md"}
    {:name "hibernate-orm"        :scm-url "https://github.com/hibernate/hibernate-orm.git" :branch "main"}
    {:name "hibernate-search"     :scm-url "https://github.com/hibernate/hibernate-search.git" :branch "main"}])
 

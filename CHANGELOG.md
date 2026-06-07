@@ -105,6 +105,24 @@ code-side answer now.
 - Migration 011-test-results-flaky adds `attempt_number`,
   `flaky_bool`, `retry_count` columns to `anvil_test_results`.
 
+### Dogfood-driven late polish (between RC and ship)
+
+- **HEAD on `:get`-only routes no longer 405s.** Anvil's reitit
+  router defaulted to 405 Method Not Allowed when HEAD hit a route
+  declared as `:get`-only. The new `wrap-head-as-get` middleware
+  in `anvil.web.routes` upcasts HEAD → GET, lets the GET handler
+  run, then strips the body per HTTP semantics. Applies globally
+  so every wrap-feature route (and the static handlers) stay
+  consistent.  Surfaced when the 0.4.0 dogfood hit `HEAD /flaky`
+  and got 405 instead of the expected 404 + Content-Length.
+- **apache-cassandra back in the wild-corpus harness** with the
+  AN6-3 feature flag note. `scripts/wild-corpus-rerun.bb` re-
+  includes the entry and stamps `:requires-flag :dockerfile-agent`
+  so operators know what to flip in `anvil.edn` before running.
+  apache-maven, eclipse-jkube, and apache-hbase also get `:notes`
+  for their AN6 receipts so the per-build expectations travel
+  with the harness, not just the receipts.
+
 ### Baseline + perf
 
 - v0.4 baseline at `benchmarks/results/v0.4-baseline-2026-06-07.edn`.

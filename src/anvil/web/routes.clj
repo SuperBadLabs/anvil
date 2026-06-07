@@ -188,6 +188,27 @@
    ["/anvil/widgets/executors"           {:get widgets/executors}]
    jenkins-routes])
 
+(defn- wrap-head-as-get
+  "v0.4 — reitit's default 405s HEAD on :get-only routes (surfaced by
+   the 0.4.0 dogfood against /flaky).  Upcast HEAD to GET, let the
+   GET handler run, then strip the response body per HTTP semantics
+   while preserving headers + status.  Sets Content-Length to the
+   would-have-been body's byte count so browsers / health checkers
+   that read it stay happy.  No-op for non-HEAD methods.
+
+   Applies globally so /secrets, /flaky, and any future
+   wrap-feature route all benefit without per-route boilerplate."
+  [handler]
+  (fn [req]
+    (if (= :head (:request-method req))
+      (when-let [resp (handler (assoc req :request-method :get))]
+        (let [body (:body resp)
+              cl (when (string? body)
+                   (str (count (.getBytes ^String body "UTF-8"))))]
+          (cond-> (assoc resp :body nil)
+            cl (assoc-in [:headers "Content-Length"] cl))))
+      (handler req))))
+
 (defn make-handler
   "Build the reitit ring handler for anvil. Pure function of routes; can be
    called from tests without starting a server."
@@ -212,6 +233,9 @@
                         :headers {"Content-Type" "text/plain"
                                   "X-Anvil-Version" v/version}
                         :body "anvil: 404 — route not found"})})))
+      ;; v0.4 — generic HEAD→GET upcast so :get-only routes (every
+      ;; wrap-feature route + the static handlers) don't 405 on HEAD.
+      wrap-head-as-get
       ;; Form + query param parsing — Jenkins' buildWithParameters
       ;; needs both.
       ring-params/wrap-params
