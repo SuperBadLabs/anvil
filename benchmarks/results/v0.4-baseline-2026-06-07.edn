@@ -1,0 +1,84 @@
+;; v0.4 baseline snapshot — T0.3
+;;
+;; Captured 2026-06-07 against the SuperBadLabs dogfood anvil at
+;; master commit 60c41dd (PR #48 v0.4 board doc just merged; T0.2 + T0.4
+;; + T0.5 still pending in PR #49; no v0.4 feature work has started).
+;;
+;; v0.4 deltas are measured against the numbers in this file. The
+;; T7.2 perf re-check compares against this baseline; any v0.4 page
+;; regressing > 20% p50 fails the exit criteria (see board, exit
+;; criteria, performance row).
+;;
+;; Composition:
+;;   :ui-ttfb         — bench-ui.bb output (7 pages × 200 iters,
+;;                      v0.4-baseline-ui-2026-06-07.edn)
+;;   :sse-soak        — deferred to T7.2 (TU1.7 receipt still holds;
+;;                      no bus/SSE code touched since v0.3.3 ship)
+;;   :vs-jenkins      — deferred to T7.2 (requires Jenkins LTS
+;;                      running; not the gating measurement for
+;;                      in-flight feature work)
+;;
+;; Bench instance caveat:
+;;   The harness ran against the *running* dogfood anvil on port 8765
+;;   (reported version 0.3.0, /opt/anvil/anvil.jar). For UI-TTFB
+;;   purposes this is functionally equivalent to current master since
+;;   no UI code has changed between v0.3.0 and 60c41dd (only docs +
+;;   v0.4 board scaffold). The numbers represent the "v0.4 starting
+;;   line" the same way the v0.3 baseline used 0.2.2 as the
+;;   "v0.3 starting line".
+;;
+;; Honest data point — :coverage budget exceedance:
+;;   :coverage page p50 = 798.255 ms (above the 50 ms budget).
+;;   The v0.3 baseline did not measure :coverage above budget; this
+;;   either reflects (a) genuine regression in the page since v0.3.0,
+;;   (b) host CPU contention during this run, or (c) the dogfood
+;;   instance accumulating coverage data that paginates badly. NOT
+;;   investigated as part of T0.3 — the baseline records what was
+;;   measured, not why. Re-run at T7.2 will reveal whether this is
+;;   transient or systemic; if systemic, file as v0.4.x board item.
+
+{:captured-at      #inst "2026-06-07T07:35:00Z"
+ :anvil-version    "0.3.0"  ; running instance at port 8765, see caveat
+ :anvil-commit     "60c41dd"  ; master HEAD; bench instance is v0.3.0 release
+ :anvil-branch     "v0.4-t0.3-baseline"
+ :runner           "SuperBadLabs dogfood host"
+ :runner-jdk       "OpenJDK 21"
+ :measurements
+ {:ui-ttfb         {:source-edn "v0.4-baseline-ui-2026-06-07.edn"
+                    :budget-ms 50.0
+                    :pages-measured 7
+                    :iters-per-page 200
+                    :all-under-budget?       false
+                    :pages-over-budget       [:coverage]
+                    :pages-over-budget-detail
+                    {:coverage {:p50-ms 798.255
+                                :p95-ms 1316.926
+                                :p99-ms 1389.164
+                                :max-ms 1500.0
+                                :budget-exceed-multiple "15.96×"
+                                :investigation-status :deferred-to-T7.2}}
+                    :pages-under-budget      [:dashboard :jobs :queue
+                                              :api-status :api-health
+                                              :vendor-htmx]
+                    :max-p50-under-budget-ms 5.802  ; /jobs
+                    :median-p50-under-budget-ms 0.264
+                    :headroom-at-max         "8.6×"}
+  :sse-soak        {:status :deferred-to-T7.2
+                    :prior-receipt "sse-soak-2026-05-30.edn"
+                    :prior-result-summary "100 concurrent SSE sessions @ idle, < 5% CPU"
+                    :why-deferred "TU1.7 receipt is current; no bus/SSE code touched between v0.3.3 ship and v0.4 T0. Re-run at T7.2 covers the v0.4 widget load."}
+  :vs-jenkins      {:status :deferred-to-T7.2
+                    :prior-receipt "anvil-vs-jenkins-2026-05-30.edn"
+                    :prior-result-summary "95× small-build wall-clock advantage"
+                    :why-deferred "Requires Jenkins LTS running on bench host. Comparison gates v0.4.0 release at T7.2; not the gating measurement for in-flight tranches."}}
+ :v0-4-board-pages-to-bench-at-T7-2
+ [;; UI surfaces that will exist after each T1-T4 ships and need to
+  ;; carry the page-load budget into the v0.4.0 release per the exit
+  ;; criteria. Names match the planned route shapes; some may slip if
+  ;; route design changes.
+  "/flaky"                  ; T1.3 dashboard
+  "/jobs/:j  (flaky widget)"; T1.3 per-job widget on existing page
+  "/jobs/:j/:n  (container step header in console)"  ; T2 visible artefact
+  "/jobs/:j  (Explain button modal)"  ; T3.5 ai authoring
+  "/jobs/:j/:n  (Provenance pill + attestation list)" ; T4.4 provenance UI
+  ]}
