@@ -11,6 +11,7 @@
             [anvil.cli.import-jenkinsfile :as import-jf]
             [anvil.cli.secrets :as secrets-cli]
             [anvil.cli.setup-tools :as setup-tools]
+            [anvil.cli.ai :as ai-cli]
             [anvil.version :as v]
             [chengis.config :as config]
             [chengis.product :as product]
@@ -28,6 +29,12 @@
   (println "  import jenkins-server <url>  (TX7 phase 2) Bulk import from a Jenkins controller")
   (println "  build <pipeline>             (TX5/TX9) Run a pipeline locally")
   (println "  list-capabilities            Show the capability registry + effective state for this product")
+  (println)
+  (println "AI authoring (v0.4.1 T3 — requires ANTHROPIC_API_KEY):")
+  (println "  init [--out PATH]            Scaffold a Jenkinsfile from the current repo")
+  (println "  explain <Jenkinsfile>        Plain-English description of a pipeline")
+  (println "  optimize <Jenkinsfile>       Suggest concrete improvements")
+  (println)
   (println "  help                         Print this message")
   (println))
 
@@ -83,6 +90,12 @@
           (case subcmd
             "tools" (setup-tools/run (vec subrest))
             (do (println "ERROR: unknown setup subcommand: " subcmd) 3)))
+
+        ;; v0.4.1 T3 — AI authoring commands.  Top-level per the board
+        ;; (anvil init / explain / optimize), not nested under `anvil ai`.
+        "init"     (ai-cli/run-init     (vec rest))
+        "explain"  (ai-cli/run-explain  (vec rest))
+        "optimize" (ai-cli/run-optimize (vec rest))
 
         (do (println (str "ERROR: unknown subcommand: " cmd))
             (print-top-level-usage)
