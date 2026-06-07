@@ -1185,6 +1185,28 @@
 
 (defn- h-agent-stage-enter [d step ctx]
   (log-effect d (agent/stage-enter-event (:stage step) (:agent step)))
+  ;; v0.4 AN6-1 — when the translator resolved a parameter-driven
+  ;; nested-label to a static choice (apache-activemq's
+  ;; agent { label { label params.nodeLabel } }), surface the
+  ;; inference so operators see WHICH parameter and value were
+  ;; chosen at translation time.
+  (when-let [inf (:inferred-from (:agent step))]
+    (log-effect d [:agent/inferred-from-choice
+                   {:param (:param-name inf)
+                    :chosen (:label (:agent step))
+                    :source (:source inf)
+                    :stage (:stage step)}]))
+  ;; AN6-1 fallback path: nested-label form without parseable
+  ;; parameters → degrade reason is set on the agent ir.  Emit a
+  ;; richer effect so this build's wild-corpus classification
+  ;; carries a clearer 'param-driven-label' instead of the generic
+  ;; 'no agents.edn entry'.
+  (when (= :param-driven-label (:degrade-reason (:agent step)))
+    (log-effect d [:agent/degraded
+                   {:label "<dynamic>"
+                    :reason :param-driven-label
+                    :stage (:stage step)
+                    :explain "agent { label { label params.X } } — no parameters block parseable"}]))
   ;; Resolve label-based declarative agents through TX11C's registry
   ;; (the same path scripted `node('…')` uses). Without this,
   ;; declarative jobs like `agent { label 'maven-21' }` or even

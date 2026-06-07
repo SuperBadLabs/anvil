@@ -732,9 +732,162 @@
             (assoc acc action-key (vec (or steps [])))))
         {})))
 
+(defn- translate-parameters
+  "v0.4 AN6-1 — extract a parameters block into a vector of param specs.
+
+   Recognized at v0.4.0: `choice { name 'X' choices ['a','b'] defaultValue 'a' }`
+   and the equivalent named-arg form `choice(name: 'X', choices: ['a','b'])`.
+   Other parameter kinds (string, booleanParam, password) parse as
+   `:kind` + raw text so we don't lose them, but `agent { label { label
+   params.X } }` resolution only consults :choice entries.
+
+   Returns `[{:kind :choice :name <str> :choices [<str>] :default-value <str>?} …]`."
+  [params-call]
+  (when params-call
+    (when-let [closure (closure-arg params-call)]
+      (let [body (body-calls closure)]
+        (vec
+         (for [c body
+               :let [nm (:name c)
+                     args (:args c)
+                     mform-arg (first args)
+                     ;; map-arg-kv returns keyword keys.  Works for both
+                     ;; structured :map cdata (clean keyword keys) and
+                     ;; legacy :other text (regex-parsed scalars).
+                     mform-kv (when (and (map? mform-arg)
+                                         (#{:map :other} (:type mform-arg)))
+                                (map-arg-kv mform-arg))
+                     ;; Closure form: choice { name 'X' choices [...] }
+                     cform (closure-arg c)
+                     cbody (when cform (body-calls cform))
+                     cl-name   (or (when cbody
+                                     (some-> (find-call cbody "name")
+                                             :args first const-val))
+                                   (:name mform-kv))
+                     cl-default (or (when cbody
+                                      (or (some-> (find-call cbody "defaultValue")
+                                                  :args first const-val)
+                                          (some-> (find-call cbody "defaultValue")
+                                                  :args first :text)))
+                                    (:defaultValue mform-kv))
+                     ;; choices list — try in priority order:
+                     ;;   (a) closure form `choices [...]` call;
+                     ;;   (b) structured :map :entries lookup whose val
+                     ;;       is itself a :list — map-arg-kv stringifies
+                     ;;       lists, so we peek the raw :entries here;
+                     ;;   (c) vector value from map-arg-kv (covers the
+                     ;;       :other text path when the regex catches);
+                     ;;   (d) regex over raw :other text — fallback for
+                     ;;       the `choices: ['a','b']` named-arg shape
+                     ;;       the scalar regex can't reach.
+                     cl-choices (or (when cbody
+                                      (let [choices-call (find-call cbody "choices")
+                                            first-arg (some-> choices-call :args first)]
+                                        (cond
+                                          (and first-arg (= :list (:type first-arg)))
+                                          (mapv #(or (const-val %) (:text %))
+                                                (:items first-arg))
+
+                                          first-arg
+                                          [(or (const-val first-arg) (:text first-arg))])))
+                                    (when (and (map? mform-arg)
+                                               (= :map (:type mform-arg)))
+                                      (some (fn [{:keys [key val]}]
+                                              (when (and (= :const (:type key))
+                                                         (= "choices" (str (:value key)))
+                                                         (= :list (:type val)))
+                                                (mapv #(or (const-val %) (:text %))
+                                                      (:items val))))
+                                            (:entries mform-arg)))
+                                    (let [v (:choices mform-kv)]
+                                      (when (vector? v) v))
+                                    (when (and (map? mform-arg)
+                                               (= :other (:type mform-arg)))
+                                      (let [t (:text mform-arg "")
+                                            list-match (re-find
+                                                        #"choices\s*:\s*\[([^\]]*)\]" t)]
+                                        (when list-match
+                                          (->> (re-seq #"['\"]([^'\"]+)['\"]"
+                                                       (nth list-match 1))
+                                               (mapv second))))))]]
+           (cond-> {:kind (keyword nm)
+                    :raw-args (args->plain args)}
+             cl-name        (assoc :name cl-name)
+             cl-default     (assoc :default-value cl-default)
+             (seq cl-choices) (assoc :choices (filterv some? cl-choices)))))))))
+
+(defn- resolve-param-driven-label
+  "AN6-1 — given a nested label closure (the inner `label { … }` whose
+   body re-calls `label params.X`) and the pipeline's parsed
+   parameters, return the static label name the build will run on.
+
+   The board says: prefer the choice's defaultValue; otherwise fall
+   back to the first listed choice. If neither is parseable (or
+   there's no matching choice param), return nil so the caller
+   degrades honestly.
+
+   Returns `{:chosen <str> :source :default-value | :first-choice
+   :param-name <str>}` or nil."
+  [inner-label-call parameters]
+  (let [arg (first (:args inner-label-call))
+        ;; `params.nodeLabel` is a Groovy PropertyExpression. The cdata
+        ;; either has it as :var with name "params.X" (some paths) or
+        ;; falls into the :other catch-all whose :text is the AST
+        ;; .toString(). Both surface "params.X" as a substring; a
+        ;; regex over either form is the lowest-risk extractor.
+        ref-text (cond
+                   (= :var (:type arg))   (or (:name arg) "")
+                   (= :other (:type arg)) (or (:text arg) "")
+                   :else "")
+        ;; First try the simple `params.X` shape (some cdata paths
+        ;; surface the property reference directly). Fall back to the
+        ;; Groovy PropertyExpression .toString() form which carries
+        ;; `variable: params … property: …ConstantExpression@HH[X]`.
+        param-ref (or (some-> (re-find #"params\.(\w+)" ref-text) second)
+                      (when (re-find #"variable:\s*params\b" ref-text)
+                        (some-> (re-find #"property:\s*org\.codehaus\.groovy\.ast\.expr\.ConstantExpression@\w+\[([^\]]+)\]"
+                                         ref-text)
+                                second)))
+        match (when param-ref
+                (some (fn [{:keys [kind name] :as p}]
+                        (when (and (= kind :choice) (= name param-ref))
+                          p))
+                      parameters))
+        choices (:choices match)
+        default-value (:default-value match)]
+    (cond
+      (and match default-value)
+      {:chosen default-value :source :default-value :param-name param-ref}
+
+      (and match (seq choices))
+      {:chosen (first choices) :source :first-choice :param-name param-ref}
+
+      :else nil)))
+
 (defn- translate-agent-block
-  "agent { label '…' }, agent { docker { image '…' } }, etc."
-  [agent-call]
+  "agent { label '…' }, agent { docker { image '…' } }, etc.
+
+   With `parameters` non-nil (v0.4 AN6-1), the nested-label-with-
+   params form
+
+     agent {
+       label {
+         label params.nodeLabel
+       }
+     }
+
+   is resolved to the parameter's defaultValue (or first choice) so
+   the agent is honored statically instead of falling through to
+   LocalShell with `:label \"<dynamic>\"`.  Activemq + every other
+   build that uses the node-label-parameter plugin shape benefits.
+
+   When resolution can't happen (no parameters block, no matching
+   choice param, no choices) we emit
+   `{:label \"<dynamic>\" :degrade-reason :param-driven-label}`
+   so the dispatcher records a clearer effect than the generic
+   no-agents.edn-entry warn."
+  ([agent-call] (translate-agent-block agent-call nil))
+  ([agent-call parameters]
   (let [closure (closure-arg agent-call)]
     (if-not closure
       ;; agent any | agent none — the symbol comes as a :var
@@ -751,7 +904,31 @@
             k8s-call       (find-call body "kubernetes")]
         (cond
           label-call
-          {:label (or (const-val (first (:args label-call))) "<dynamic>")}
+          (let [first-arg (first (:args label-call))
+                static (const-val first-arg)
+                ;; v0.4 AN6-1 — nested-label form: the first arg is a
+                ;; :closure containing `label params.X`. Resolve via
+                ;; the pipeline's parameters when possible.
+                nested-inner (when (and (nil? static) (closure? first-arg))
+                               (let [inner-body (body-calls first-arg)]
+                                 (find-call inner-body "label")))
+                inferred (when nested-inner
+                           (resolve-param-driven-label nested-inner parameters))]
+            (cond
+              static
+              {:label static}
+
+              inferred
+              {:label (:chosen inferred)
+               :inferred-from {:param-name (:param-name inferred)
+                               :source (:source inferred)}}
+
+              nested-inner
+              {:label "<dynamic>"
+               :degrade-reason :param-driven-label}
+
+              :else
+              {:label "<dynamic>"}))
 
           node-call
           (let [n-body (body-calls (closure-arg node-call))
@@ -775,7 +952,7 @@
           {:type :kubernetes :raw "<deferred to a later wave>"}
 
           :else
-          {:type :unknown :raw "<unrecognized agent block>"})))))
+          {:type :unknown :raw "<unrecognized agent block>"}))))))
 
 (defn- translate-stage
   [stage-call source closure-objs]
@@ -1065,14 +1242,19 @@
                libs         (detect-libraries source)]
            (ir/pipeline
             {:source-path source-path
-             :agent (when agent-call (translate-agent-block agent-call))
+             ;; v0.4 AN6-1 — parse parameters BEFORE the agent so the
+             ;; nested-label-with-params form (apache-activemq) can
+             ;; resolve its label statically.
+             :parameters (translate-parameters params-call)
+             :agent (when agent-call
+                      (translate-agent-block agent-call
+                                             (translate-parameters params-call)))
              :stages (when stages-call (translate-stages stages-call source closure-objs))
              :post   (when post-call (translate-post-body (closure-arg post-call) source closure-objs))
              :environment (when env-call (translate-environment (closure-arg env-call) source closure-objs))
              :tools   (when tools-call    [{:raw "<see anvil.compat.jenkins.translator/translate-tools>"}])
              :options (when options-call  [{:raw "<options block>"}])
              :triggers (when triggers-call [{:raw "<triggers block>"}])
-             :parameters (when params-call [{:raw "<parameters block>"}])
              :libraries (when (seq libs) libs)}))))
      (catch Exception e
        ;; Total parse failure — usually means the file is fully scripted
