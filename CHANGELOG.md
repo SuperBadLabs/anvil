@@ -1,5 +1,156 @@
 # anvil — changelog
 
+## 0.4.0 — Leapfrog + Honesty Release (2026-06-07)
+
+The release the v0.4 board promised — though scoped honestly: of the
+four leapfrog tranches, **T1 (flaky)** and **T2 (container-as-step)**
+shipped. T3 (AI authoring) and T4 (SLSA provenance) reserved their
+flags + SSE topics + doc stubs but their implementations defer to
+**0.4.1**. The **AN6 honesty series — all six tickets** shipped.
+Every wild-corpus build the v0.3.3 receipt named by build has a
+code-side answer now.
+
+### Leapfrog tranches — SHIPPED
+
+- **T1 — Flaky-test detection** (`:anvil.features/flaky`).
+  Per AV4-3, passed-on-retry analysis is the only definition at
+  v0.4.0 (no statistical models). New `anvil.flaky` namespace
+  detects tests that failed an earlier attempt and passed a later
+  one in the same build; the build-completion hook flags them in
+  `anvil_test_results` and publishes the new `:flaky-flagged` SSE
+  event. New `/flaky` dashboard (top-20 across instance, 30-build
+  window) + per-build widget on the job page. `h-retry` is now a
+  real loop emitting `:retry/attempt` per cycle, and `h-junit`
+  threads the attempt index into per-attempt rows so the substrate
+  exists for real wild-corpus signal.
+
+- **T2 — Container-as-step** (`:anvil.features/container-step`).
+  `steps { container('maven:3.9') { sh '...' } }` from
+  Jenkinsfile-Pipeline now routes the wrapped step through
+  chengis-core's `DockerBackend` via the existing AN5-3 plumbing.
+  No new container abstraction — per AV4-2, we reuse what's there.
+  Composes with declarative matrix.
+
+### Leapfrog tranches — RESERVED, deferred to 0.4.1
+
+- **T3 — AI authoring** (`:anvil.features/ai-authoring`). Feature
+  flag reserved + SSE topic `:ai-suggested` reserved + docs stub
+  at `docs/ai-authoring/README.md` naming substrate, planned
+  files, and AV4-4 local-first decision. Implementation
+  (`anvil init` / `explain` / `optimize` CLI + UI buttons + the
+  Anthropic API client) deferred to 0.4.1. The reservation lets
+  operators wire dependent automation against the flag/topic
+  shapes today even though they 404 / silently produce nothing
+  until 0.4.1.
+
+- **T4 — SLSA L3 provenance** (`:anvil.features/provenance`).
+  Feature flag reserved + SSE topic `:provenance-attested`
+  reserved + docs stub at `docs/provenance/README.md`. Sigstore
+  wiring (default Fulcio keyless, offline-key fallback,
+  in-toto v1 attestation writer) + `anvil provenance verify`
+  CLI deferred to 0.4.1.
+
+### AN6 honesty series — every wild-corpus gap named in 0.3.3 closed
+
+- **AN6-1 (#56)** — `agent { label { label params.X } }` (the
+  parameter-driven nested-label shape) now resolves to the
+  parameter's `defaultValue` or first listed `choice`. Closes
+  apache-activemq's "Maven enforcer because we ran on host 3.8.7"
+  honest-but-wrong-environment chain documented in
+  `an5-7-activemq-receipt.md`.
+
+- **AN6-2 (#59)** — Nested `stages { … }` blocks inside a stage
+  body (apache-cxf's `matrix → stages → stage → stages` chain;
+  eclipse-epsilon's `stage('Main') { stages { … } }` grouping)
+  now flatten into N sibling stages with the wrapper name prefixed
+  and `:agent` / `:environment` / `:post` propagated.
+
+- **AN6-3 (#60)** — `agent { dockerfile { filename '…' } }` is
+  honored when `:anvil.features/dockerfile-agent` is on. New
+  `anvil.tools.dockerfile` namespace builds the image with a
+  deterministic content-hash tag (`anvil-dockerfile:<16-hex>`),
+  caches across builds, and upgrades ctx active-agent to the docker
+  shape so AN5-3 routing takes over. Closes apache-cassandra; will
+  extract to `chengis.tools.dockerfile` when chengis-core 0.4.0
+  ships per AV4-8.
+
+- **AN6-4 (#57)** — `mavenBuild()` from
+  jenkinsci/pipeline-library is honestly `:unsupported` with a
+  receipt at `docs/jenkins-compat/an6-4-mavenbuild-receipt.md`
+  + the `sh 'mvn …'` + explicit `junit` step workaround. Per
+  the v0.4 board's option (b) — implementing the shared-lib
+  step would mean re-implementing ~10 different Jenkins
+  integrations that drift from upstream.
+
+- **AN6-5 (#58)** — GPG-subkey credential UX receipt at
+  `docs/secrets/gpg-subkey.md` — provision via existing
+  `--type string` + the mktemp/trap workaround for Jenkinsfiles
+  that expect file paths. v0.4.x adds a real `:file` type.
+
+- **AN6-6 (#57)** — `scripts/wild-corpus-rerun.bb` learns
+  `-Jmax-minutes=N` (default 30) for runs that include
+  apache-hbase + similar long-runners. `docs/dispatcher/long-builds.md`
+  documents the two independent timeout knobs (harness vs daemon)
+  + the AN5-1 honest classification: cap-killed builds are
+  `:aborted`, NOT `:failure`.
+
+### Infrastructure
+
+- `chengis-core` pinned to **0.3.0** (unchanged from 0.3.3); if
+  AN6-3 extracts to `chengis.tools.dockerfile` in a follow-up,
+  chengis-core 0.4.0 will ride that release.
+- 4 new SSE event topics reserved at T0.4: `:flaky-flagged`,
+  `:container-step-started`, `:ai-suggested`, `:provenance-attested`.
+- 5 new feature flags, all closed-by-default per AV4-7.
+- Migration 011-test-results-flaky adds `attempt_number`,
+  `flaky_bool`, `retry_count` columns to `anvil_test_results`.
+
+### Dogfood-driven late polish (between RC and ship)
+
+- **HEAD on `:get`-only routes no longer 405s.** Anvil's reitit
+  router defaulted to 405 Method Not Allowed when HEAD hit a route
+  declared as `:get`-only. The new `wrap-head-as-get` middleware
+  in `anvil.web.routes` upcasts HEAD → GET, lets the GET handler
+  run, then strips the body per HTTP semantics. Applies globally
+  so every wrap-feature route (and the static handlers) stay
+  consistent.  Surfaced when the 0.4.0 dogfood hit `HEAD /flaky`
+  and got 405 instead of the expected 404 + Content-Length.
+- **apache-cassandra back in the wild-corpus harness** with the
+  AN6-3 feature flag note. `scripts/wild-corpus-rerun.bb` re-
+  includes the entry and stamps `:requires-flag :dockerfile-agent`
+  so operators know what to flip in `anvil.edn` before running.
+  apache-maven, eclipse-jkube, and apache-hbase also get `:notes`
+  for their AN6 receipts so the per-build expectations travel
+  with the harness, not just the receipts.
+
+### Baseline + perf
+
+- v0.4 baseline at `benchmarks/results/v0.4-baseline-2026-06-07.edn`.
+- 6 of 7 UI pages under the 50ms p50 budget (slowest under-budget:
+  `/jobs` @ 5.8ms, 8.6× headroom).
+- One honest data point: `/coverage` p50 = 798ms (15.96× over
+  budget). Investigation deferred to T7.2 re-check; not gated by
+  v0.4.0 ship.
+
+### Headline numbers (anvil-side)
+
+- ~2,600 LOC across production + tests
+- +75 new tests / ~+200 new assertions
+- Full suite at the 0.4.0 commit: **642 / 1982** — 0 failures, 0 errors
+- 13 PRs cycled through the v0.4 board (PRs #48–#60)
+
+### Honest deferrals tracked for 0.4.1
+
+- T3 (AI authoring) full implementation
+- T4 (SLSA provenance) full implementation
+- T1.6 — 4-fixture retry-shape browser test (substrate locked
+  down by T1.1's analyzer + T1.2 storage tests; etaoin scaffold
+  is the only missing piece)
+- T2.6 — 3-shape container-step corpus + browser smoke
+- T6 — full post-AN6 wild-corpus rerun to verify the receipt
+  numbers actually flip (the substrate is there, the verification
+  receipt rides 0.4.1 once dogfood instance settles)
+
 ## 0.3.3 — The Receipt Release (2026-06-06)
 
 The "0.3.2 made the artifact axis non-zero with a 4-build subset
