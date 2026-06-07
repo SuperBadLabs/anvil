@@ -1,6 +1,6 @@
 # anvil
 
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![tests](https://github.com/SuperBadLabs/anvil/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/SuperBadLabs/anvil/actions/workflows/test.yml)
 [![junit](https://img.shields.io/badge/junit-dashboard-brightgreen)](docs/junit/)
@@ -10,6 +10,8 @@
 [![scheduler](https://img.shields.io/badge/scheduler-cron%20%2B%20H--spread-brightgreen)](docs/scheduler/)
 [![secrets](https://img.shields.io/badge/secrets-AES--256--GCM-brightgreen)](docs/secrets/)
 [![mise](https://img.shields.io/badge/mise%2Fasdf-auto-brightgreen)](docs/tools/)
+[![flaky](https://img.shields.io/badge/flaky--tests-passed--on--retry-brightgreen)](docs/flaky/)
+[![container-step](https://img.shields.io/badge/container--step-DockerBackend-brightgreen)](docs/container-step/)
 
 A free, open-source CI server that **parses any Jenkinsfile** and
 **executes the supported subset** on a modern engine. The supported
