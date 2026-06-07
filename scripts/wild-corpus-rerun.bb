@@ -7,7 +7,15 @@
 ;; USAGE
 ;; -----
 ;;   ANVIL_URL=http://localhost:8765 \
-;;     bb scripts/wild-corpus-rerun.bb [--subset N]
+;;     bb scripts/wild-corpus-rerun.bb [--subset N] [--max-minutes M]
+;;
+;; v0.4 AN6-6 — `--max-minutes M` (default 30) sets the harness cap
+;; for the completion-poll loop. apache-hbase routinely needs 90+
+;; minutes for its first end-to-end run; bump this for runs that
+;; include it.  The dispatcher's per-build timeout (configurable via
+;; `:anvil.dispatcher/build-timeout-min` in anvil.edn) is independent —
+;; this knob only controls how long the harness WAITS for the build
+;; daemon to report completion.  See docs/dispatcher/long-builds.md.
 ;;
 ;; The anvil instance must be running with `wild-corpus-agents.edn`
 ;; loaded as its registry (see the file header for instructions).
@@ -117,10 +125,14 @@
         _ (doseq [t targets]
             (printf "  → trigger %s ... " (:name t))
             (let [s (trigger-build! (:name t))] (println s)))
-        ;; Wait for completion — each build has its own timeout
-        _ (println "Waiting for completion (poll every 30s, max 30 min)...")
+        ;; Wait for completion — each build has its own timeout.
+        ;; v0.4 AN6-6: the cap is configurable via --max-minutes so
+        ;; runs that include apache-hbase don't get clipped at the
+        ;; 30-min default before its first artifact lands.
+        max-minutes (or (some-> (System/getProperty "max-minutes") parse-long) 30)
+        _ (printf "Waiting for completion (poll every 30s, max %d min)...\n" max-minutes)
         completed (atom #{})
-        max-iterations 60
+        max-iterations (* 2 max-minutes)  ; 30s polls per minute
         results (loop [iter 0]
                   (if (or (= (count @completed) (count targets))
                           (>= iter max-iterations))
