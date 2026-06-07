@@ -16,7 +16,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.classification :as classify]
-            [anvil.compat.jenkins.dispatcher :as ad]))
+            [anvil.compat.jenkins.dispatcher :as ad]
+            [anvil.tools.dockerfile]
+            [anvil.features]))
 
 (defn- agent-stage-enter [dispatcher agent-spec]
   (d/dispatch dispatcher
@@ -135,3 +137,47 @@
         ":execute? true docker agent must NOT emit :agent/degraded")
     (let [c (classify/classify-build {:status :ok} @(:effects d) {})]
       (is (= :success (:result c))))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 AN6-3 — dockerfile-agent honored when feature flag is on
+;; ---------------------------------------------------------------------------
+
+(deftest dockerfile-honored-when-an6-3-flag-on
+  (testing "with :anvil.features/dockerfile-agent ON + :execute? true,
+            the agent-stage-enter handler builds (or caches) the image
+            via anvil.tools.dockerfile and upgrades ctx :active-agent
+            to a docker shape — no :agent/degraded emitted"
+    ;; Force flag on for this test.
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-agent true)
+    (try
+      (with-redefs
+        [;; Stub ensure-image! to return a deterministic 'cached' tag
+         ;; without invoking the docker daemon.
+         anvil.tools.dockerfile/ensure-image!
+         (fn [_workspace _filename _opts]
+           {:tag "anvil-dockerfile:0123456789abcdef"
+            :exit 0 :cached? true})]
+        (let [d (ad/make {:execute? true})
+              ;; Use the workspace-bearing ctx the build pipeline supplies.
+              r (chengis.engine.dispatcher/dispatch
+                 d
+                 {:type :jenkins/agent-stage-enter
+                  :stage "Build"
+                  :agent {:dockerfile {:filename "Dockerfile.ci"}}}
+                 {:workspace "/tmp/anvil-dockerfile-test-ws"})]
+          (testing "no :agent/degraded for the dockerfile shape"
+            (is (empty? (filter #(= "dockerfile"
+                                    (get-in (second %) [:requested-agent :type]))
+                                (degraded-effects d)))))
+          (testing "a :dockerfile/image-cached or image-built effect was logged"
+            (let [df-effects (filter #(#{:dockerfile/image-cached
+                                         :dockerfile/image-built} (first %))
+                                     @(:effects d))]
+              (is (= 1 (count df-effects)))
+              (is (= "anvil-dockerfile:0123456789abcdef"
+                     (-> df-effects first second :tag)))))
+          (testing "ctx :active-agent upgraded to docker shape — AN5-3 will route h-sh"
+            (is (= "anvil-dockerfile:0123456789abcdef"
+                   (get-in (:ctx r) [:active-agent :docker :image]))))))
+      (finally
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)))))

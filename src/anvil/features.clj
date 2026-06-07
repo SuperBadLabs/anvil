@@ -110,7 +110,19 @@
     ;; <artifact>.intoto.jsonl. Per AV4-5: sigstore/cosign with
     ;; Fulcio keyless flow by default; long-lived offline key as
     ;; fallback for air-gapped operators (see R4).
-    :provenance})
+    :provenance
+
+    ;; :dockerfile-agent — AN6-3. `agent { dockerfile { filename '…' } }`
+    ;; runs `docker build` against the named Dockerfile in the
+    ;; workspace, tags the result with a content-hash of the
+    ;; Dockerfile + its COPY/ADD sources, and routes the build's
+    ;; sh steps into that image via the AN5-3 DockerBackend bridge.
+    ;; Closed-by-default per AV4-7 — when off, the dispatcher's
+    ;; existing :agent/degraded :runtime-unsupported path surfaces
+    ;; the unhonored shape honestly. Implementation lives in
+    ;; anvil.tools.dockerfile at v0.4.0; will extract to
+    ;; chengis.tools.dockerfile when chengis-core 0.4.0 ships.
+    :dockerfile-agent})
 
 (def ^:private flag-ns "anvil.features")
 
