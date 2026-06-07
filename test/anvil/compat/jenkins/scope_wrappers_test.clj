@@ -4,7 +4,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.translator :as t]
-            [anvil.compat.jenkins.dispatcher :as ad]))
+            [anvil.compat.jenkins.dispatcher :as ad]
+            [anvil.features]))
 
 (defn- run-jenkinsfile [src & {:keys [canned fail-attempts]}]
   (let [ir (t/parse src)
@@ -192,6 +193,61 @@
         (is (= 2 (count (filter #(= :parallel/branch-end %) types))))
         ;; All sh calls were dispatched (1 in quick, 2 in slow).
         (is (= 3 (count (filter #(= :sh %) types))))))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 T2 — container-as-step
+;; ---------------------------------------------------------------------------
+
+(deftest container-step-with-flag-off-records-degraded-and-runs-body
+  (testing "feature flag closed → body still runs, [:container/degraded :flag-off] is observable"
+    (anvil.features/set! :container-step false)
+    (let [{:keys [effects]}
+          (run-jenkinsfile
+           "pipeline { agent any; stages { stage('S') { steps {
+              container('maven:3.9-eclipse-temurin-21') {
+                sh 'mvn -B package'
+              }
+            } } } }")]
+      (let [types (mapv first effects)]
+        (is (= [:container/degraded :sh] types))
+        (is (= "maven:3.9-eclipse-temurin-21"
+               (-> effects (nth 0) second :image)))
+        (is (= :flag-off (-> effects (nth 0) second :reason)))))))
+
+(deftest container-step-with-flag-on-emits-enter-leave-around-body
+  (testing "feature flag open → :container/enter wraps the body; :container/leave on exit"
+    (anvil.features/set! :container-step true)
+    (try
+      (let [{:keys [effects]}
+            (run-jenkinsfile
+             "pipeline { agent any; stages { stage('S') { steps {
+                container('maven:3.9') {
+                  sh 'mvn package'
+                }
+              } } } }")]
+        (let [types (mapv first effects)]
+          (is (= [:container/enter :sh :container/leave] types))
+          (is (= "maven:3.9" (-> effects (nth 0) second :image)))
+          (is (= "maven:3.9" (-> effects (nth 2) second :image)))))
+      (finally (anvil.features/set! :container-step false)))))
+
+(deftest container-step-missing-image-records-the-gap
+  (testing "container() with non-string first arg (e.g. param interpolation) — body still runs, :container/missing-image observable"
+    (anvil.features/set! :container-step true)
+    (try
+      (let [{:keys [effects]}
+            (run-jenkinsfile
+             "pipeline { agent any; stages { stage('S') { steps {
+                container(env.CONTAINER) {
+                  sh 'work'
+                }
+              } } } }")]
+        (let [types (mapv first effects)]
+          (is (= :container/missing-image (first types))
+              "missing-image emitted before the body runs")
+          (is (some #{:sh} types)
+              "body still runs — don't silently drop work")))
+      (finally (anvil.features/set! :container-step false)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin step adapters (a representative sample)

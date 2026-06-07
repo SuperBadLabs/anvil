@@ -393,6 +393,36 @@
      :env-strings (vec envs)
      :body (vec (or body []))}))
 
+(defn- translate-container
+  "v0.4 T2.1 — `container('image') { … }` from Jenkins-Pipeline.
+
+   Routes its body's sh steps through chengis-core's DockerBackend
+   (handled in the dispatcher per AV4-2 — no new container abstraction).
+
+   The first arg is the image string; a single closure provides the
+   body.  Both forms `container('img') { … }` and
+   `container image: 'img' { … }` are accepted: the latter shows up
+   as a `:map`-form first arg.  Unknown images at translation time
+   are still emitted — the dispatcher's docker hook reports a
+   pull-failure honestly at run-time per the AN5-* effects pattern."
+  [call source closure-objs]
+  (let [args (:args call)
+        first-arg (first args)
+        image (cond
+                (string? first-arg) first-arg
+                (and (map? first-arg) (= :const (:type first-arg)))
+                (:value first-arg)
+                (and (map? first-arg) (= :map (:type first-arg)))
+                (some-> (map-arg-kv first-arg) (get "image"))
+                :else nil)
+        body-closure (closure-arg call)
+        body (when body-closure
+               (mapv #(translate-call % source closure-objs)
+                     (body-calls body-closure)))]
+    {:type :jenkins/container
+     :image image
+     :body (vec (or body []))}))
+
 (defn- translate-with-credentials
   [call source closure-objs]
   (let [args (:args call)
@@ -591,6 +621,10 @@
    ;; Scope wrappers (declarative IR form)
    "withEnv"          translate-with-env
    "withCredentials"  translate-with-credentials
+   ;; v0.4 T2.1 — container('image') { sh … } — route body through
+   ;; chengis-core's DockerBackend (AV4-2). Behaves like withEnv from
+   ;; the translator's POV: wraps a closure, no container infra here.
+   "container"        translate-container
    "timeout"          translate-timeout
    "retry"            translate-retry
    "parallel"         translate-parallel

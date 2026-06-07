@@ -895,6 +895,63 @@
       (log-effect this [:timeout/leave])
       (propagate-or-ok after #(dissoc % :timeout-deadline)))))
 
+(defn- h-container
+  "v0.4 T2.2 — `container('image') { … }` (parsed by translate-container).
+
+   Mutates ctx :active-agent to `{:docker {:image …}}` for the body's
+   duration; the existing shell-execute path (AN5-3b) recognizes
+   docker-shaped active-agents and routes through chengis-core's
+   `DockerBackend`. Reuses AN5-3 plumbing per **AV4-2** — no new
+   container abstraction lives in anvil.
+
+   Restores the outer :active-agent on exit (nested `container { … }`
+   nesting and matrix-cell-per-container-image both rely on this).
+
+   Effects:
+     [:container/enter {:image <str>}]
+     ... body effects ...
+     [:container/leave {:image <str>}]
+     [:container/missing-image] (when no image string was parseable —
+                                 we still run the body so the build
+                                 doesn't silently lose work; the
+                                 effect makes the gap observable)
+
+   Gated by `:anvil.features/container-step` (closed-by-default per
+   AV4-7): when off, we fall through to the existing host-shell
+   path with an `[:container/degraded {:image <str> :reason :flag-off}]`
+   effect so operators can see WHY the container wasn't honored."
+  [d step ctx]
+  (let [image (:image step)
+        body (or (:body step) [])
+        outer-agent (:active-agent ctx)
+        feat-on? (try
+                   ((requiring-resolve 'anvil.features/enabled?) :container-step)
+                   (catch Throwable _ false))]
+    (cond
+      (nil? image)
+      (do
+        (log-effect d [:container/missing-image])
+        (let [after (run-body d body ctx)]
+          (propagate-or-ok after identity)))
+
+      (not feat-on?)
+      (do
+        (log-effect d [:container/degraded
+                       {:image image :reason :flag-off}])
+        (let [after (run-body d body ctx)]
+          (propagate-or-ok after identity)))
+
+      :else
+      (let [new-agent (-> (or outer-agent {})
+                          (assoc :docker {:image image}))]
+        (log-effect d [:container/enter {:image image}])
+        (let [after (run-body d body (assoc ctx :active-agent new-agent))]
+          (log-effect d [:container/leave {:image image}])
+          (propagate-or-ok after
+                           #(if outer-agent
+                              (assoc % :active-agent outer-agent)
+                              (dissoc % :active-agent))))))))
+
 (defn- h-retry
   "Jenkins-Pipeline `retry(N) { body }` — run body up to N times,
    stopping at the first :ok.  Each attempt gets its 1-based index
@@ -1070,7 +1127,7 @@
           :jenkins/build :jenkins/error :jenkins/sleep
           :jenkins/dir :jenkins/dir-enter :jenkins/dir-leave :jenkins/node
           :jenkins/with-env :jenkins/with-credentials :jenkins/timeout
-          :jenkins/retry :jenkins/parallel
+          :jenkins/retry :jenkins/parallel :jenkins/container
           :jenkins/properties :jenkins/with-checks :jenkins/with-maven
           :jenkins/script :jenkins/scripted-eval :jenkins/unknown
           :jenkins/agent-stage-enter :jenkins/agent-stage-leave}
@@ -1235,6 +1292,7 @@
         :jenkins/timeout           (h-timeout this step ctx)
         :jenkins/retry             (h-retry this step ctx)
         :jenkins/parallel          (h-parallel this step ctx)
+        :jenkins/container         (h-container this step ctx)
         :jenkins/properties        (h-properties this step ctx)
         :jenkins/with-checks       (h-with-checks this step ctx)
         :jenkins/with-maven        (h-with-maven this step ctx)
