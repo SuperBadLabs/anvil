@@ -126,3 +126,93 @@
     :parse-errors [{:source "garbage1.xml" :message "..." :exception "..."}
                    {:source "garbage2.xml" :message "..." :exception "..."}]})
   (is (= 2 (:parse-errors (tr/find-summary "anvil-self" 42)))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 T1.2 — per-attempt rows + flaky write-back
+;; ---------------------------------------------------------------------------
+
+(defn- one-case-tree
+  "Tree containing exactly one testcase row, in the named status.
+   Lets us simulate per-attempt scans without mocking surefire XML."
+  [test-id status]
+  {:suites [{:name "demo.RetrySuite"
+             :tests 1
+             :passed (if (= status :passed) 1 0)
+             :failed (if (= status :failed) 1 0)
+             :errored (if (= status :errored) 1 0)
+             :skipped (if (= status :skipped) 1 0)
+             :duration-ms 5
+             :cases [{:test-id test-id
+                      :name (subs test-id (inc (.indexOf test-id "#")))
+                      :class (subs test-id 0 (.indexOf test-id "#"))
+                      :status status
+                      :duration-ms 5
+                      :failure-msg (when (#{:failed :errored} status) "boom")
+                      :failure-type (when (#{:failed :errored} status) "Boom")
+                      :failure-trace (when (#{:failed :errored} status) "stack")}]}]
+   :totals {:tests 1
+            :passed (if (= status :passed) 1 0)
+            :failed (if (= status :failed) 1 0)
+            :errored (if (= status :errored) 1 0)
+            :skipped (if (= status :skipped) 1 0)
+            :duration-ms 5}
+   :parse-errors []})
+
+(deftest attempt-aware-record-keeps-prior-attempts
+  (testing "calling record-build-results! with successive :attempt-number does NOT clobber prior attempts"
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo.RetrySuite#flaky" :failed)
+                              {:attempt-number 1})
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo.RetrySuite#flaky" :passed)
+                              {:attempt-number 2})
+    (let [rows (tr/find-results-all-attempts "anvil-self" 42)]
+      (is (= 2 (count rows)))
+      (is (= [1 2] (mapv :attempt-number rows))
+          "rows ordered by attempt_number ASC")
+      (is (= [:failed :passed] (mapv :status rows))))))
+
+(deftest single-attempt-call-still-replaces-attempt-1
+  (testing "back-compat: arity-3 call replaces prior attempt-1 rows only (delete-then-insert in same attempt slot)"
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo.RetrySuite#a" :failed))
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo.RetrySuite#a" :passed))
+    (let [rows (tr/find-results-all-attempts "anvil-self" 42)]
+      (is (= 1 (count rows)))
+      (is (= 1 (:attempt-number (first rows))))
+      (is (= :passed (:status (first rows)))))))
+
+(deftest write-flaky-flags-rewrites-rows-and-clears-stale-flags
+  (testing "write-flaky-flags! flips flaky_bool + retry_count across all attempt rows for the named tests"
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo#flaked" :failed)
+                              {:attempt-number 1})
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo#flaked" :passed)
+                              {:attempt-number 2})
+    (tr/record-build-results! "anvil-self" 42
+                              (one-case-tree "demo#stable" :passed)
+                              {:attempt-number 1})
+    (let [n (tr/write-flaky-flags! "anvil-self" 42 {"demo#flaked" 1})]
+      ;; 2 flaked rows + 1 stable row are all UPDATEd by the clear-then-set
+      ;; pattern, but jdbc/update-count aggregates across the second
+      ;; UPDATE (the named-test one) — just verify it touched something
+      ;; positive.  Behavior verified via the SELECTs below.
+      (is (pos? n)))
+    (let [flaky (tr/find-flaky-tests "anvil-self" 42)]
+      (is (= 1 (count flaky)))
+      (is (= "demo#flaked" (:test-id (first flaky))))
+      (is (true? (:flaky? (first flaky))))
+      (is (= 1 (:retry-count (first flaky))))
+      ;; Latest-attempt — the one that PASSED
+      (is (= 2 (:attempt-number (first flaky))))
+      (is (= :passed (:status (first flaky)))))
+    (testing "stable test has flaky=false / retry-count=0 written through"
+      (let [rows (tr/find-results-all-attempts "anvil-self" 42)
+            stable (first (filter #(= "demo#stable" (:test-id %)) rows))]
+        (is (false? (:flaky? stable)))
+        (is (= 0 (:retry-count stable))))))
+  (testing "re-running write-flaky-flags! with empty map clears prior flake flags"
+    (tr/write-flaky-flags! "anvil-self" 42 {})
+    (is (empty? (tr/find-flaky-tests "anvil-self" 42)))))
