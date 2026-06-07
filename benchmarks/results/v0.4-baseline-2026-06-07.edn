@@ -54,7 +54,7 @@
                     {:coverage {:p50-ms 798.255
                                 :p95-ms 1316.926
                                 :p99-ms 1389.164
-                                :max-ms 1500.0
+                                :max-ms 1403.401
                                 :budget-exceed-multiple "15.96×"
                                 :investigation-status :deferred-to-T7.2}}
                     :pages-under-budget      [:dashboard :jobs :queue
