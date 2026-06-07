@@ -306,3 +306,86 @@
           (is (some #(re-find #"Publish" %) names))
           ;; The scripted-pipeline tag should be set on options
           (is (true? (some :scripted-pipeline? (:options ir)))))))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 AN6-1 — parameter-driven nested label
+;; ---------------------------------------------------------------------------
+
+(def ^:private activemq-shape
+  "Mirrors the apache-activemq Jenkinsfile shape that fell through to
+   LocalShell in v0.3.3 (see docs/jenkins-compat/an5-7-activemq-receipt.md).
+   The :default-value form of the choice param drives the static label
+   resolution under AN6-1."
+  ;; Note: explicit `;` between top-level blocks because the Groovy
+  ;; parser anvil uses (`anvil.compat.jenkins.groovy`) doesn't always
+  ;; treat a newline as a statement terminator when a single-line
+  ;; brace-block precedes another.  Matches the existing
+  ;; agent-shapes-test convention.
+  "pipeline {
+     agent { label { label params.nodeLabel } };
+     parameters { choice(name: 'nodeLabel', choices: ['ubuntu', 's390x', 'arm', 'Windows']) };
+     stages { stage('S') { steps { sh 'mvn -B package' } } }
+   }")
+
+(deftest an6-1-resolves-param-driven-label-to-first-choice
+  (testing "agent { label { label params.X } } + choice(name X, choices [a,b]) → :label 'a' :inferred-from"
+    (let [ir (t/parse activemq-shape)
+          agent (:agent ir)]
+      (is (= "ubuntu" (:label agent))
+          "first choice picked when no defaultValue given")
+      (is (= {:param-name "nodeLabel" :source :first-choice}
+             (:inferred-from agent))))))
+
+(def ^:private activemq-with-default-shape
+  "Same shape but with defaultValue set explicitly to test the
+   defaultValue-preferred branch."
+  "pipeline {
+     agent { label { label params.nodeLabel } };
+     parameters { choice { name 'nodeLabel'; choices ['s390x', 'arm']; defaultValue 'arm' } };
+     stages { stage('S') { steps { sh 'true' } } }
+   }")
+
+(deftest an6-1-prefers-defaultValue-over-first-choice
+  (testing "choice with defaultValue → resolved to that, not the first choices entry"
+    (let [ir (t/parse activemq-with-default-shape)
+          agent (:agent ir)]
+      (is (= "arm" (:label agent)))
+      (is (= :default-value (-> agent :inferred-from :source))))))
+
+(def ^:private nested-label-without-params-shape
+  "agent { label { label params.X } } with NO parameters block — the
+   degradation fallback path. Before AN6-1 this also produced
+   :label '<dynamic>' but with the generic agents.edn-miss reason.
+   Now the :degrade-reason is :param-driven-label, distinct enough
+   for the classifier."
+  "pipeline {
+     agent { label { label params.someLabel } };
+     stages { stage('S') { steps { sh 'true' } } }
+   }")
+
+(deftest an6-1-degrades-honestly-without-parameters-block
+  (testing "nested-label without parameters → :label '<dynamic>' :degrade-reason :param-driven-label"
+    (let [ir (t/parse nested-label-without-params-shape)
+          agent (:agent ir)]
+      (is (= "<dynamic>" (:label agent)))
+      (is (= :param-driven-label (:degrade-reason agent)))
+      (is (nil? (:inferred-from agent))
+          "no inference made — operator-visible degrade reason only"))))
+
+(deftest an6-1-static-label-unaffected
+  (testing "agent { label 'ubuntu' } — classic static form still works unchanged"
+    (let [ir (t/parse "pipeline { agent { label 'ubuntu' }; stages { stage('S') { steps { sh 'true' } } } }")
+          agent (:agent ir)]
+      (is (= "ubuntu" (:label agent)))
+      (is (nil? (:inferred-from agent)))
+      (is (nil? (:degrade-reason agent))))))
+
+(deftest an6-1-parameters-block-now-structured
+  (testing "the :parameters IR field is no longer a raw placeholder"
+    (let [ir (t/parse activemq-shape)
+          params (:parameters ir)]
+      (is (vector? params))
+      (is (= 1 (count params)))
+      (is (= :choice (-> params first :kind)))
+      (is (= "nodeLabel" (-> params first :name)))
+      (is (= ["ubuntu" "s390x" "arm" "Windows"] (-> params first :choices))))))
