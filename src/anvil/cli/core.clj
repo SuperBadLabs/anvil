@@ -12,6 +12,7 @@
             [anvil.cli.secrets :as secrets-cli]
             [anvil.cli.setup-tools :as setup-tools]
             [anvil.cli.ai :as ai-cli]
+            [anvil.cli.provenance :as provenance-cli]
             [anvil.version :as v]
             [chengis.config :as config]
             [chengis.product :as product]
@@ -34,6 +35,9 @@
   (println "  init [--out PATH]            Scaffold a Jenkinsfile from the current repo")
   (println "  explain <Jenkinsfile>        Plain-English description of a pipeline")
   (println "  optimize <Jenkinsfile>       Suggest concrete improvements")
+  (println)
+  (println "SLSA L3 provenance (v0.4.1 T4 — requires `cosign` on PATH):")
+  (println "  provenance verify <artifact> Verify a sigstore-signed attestation")
   (println)
   (println "  help                         Print this message")
   (println))
@@ -96,6 +100,11 @@
         "init"     (ai-cli/run-init     (vec rest))
         "explain"  (ai-cli/run-explain  (vec rest))
         "optimize" (ai-cli/run-optimize (vec rest))
+
+        ;; v0.4.1 T4 — SLSA L3 provenance.  Subcommands under
+        ;; `anvil provenance verify` for now; sign happens automatically
+        ;; in the dispatcher (T4.3) when the feature flag is on.
+        "provenance" (provenance-cli/run (vec rest))
 
         (do (println (str "ERROR: unknown subcommand: " cmd))
             (print-top-level-usage)
