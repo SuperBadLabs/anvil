@@ -55,10 +55,17 @@
      :schedule-fired    [:job <name>]       — T5.3  cron tick → trigger
      :secret-rotated    :global             — T6.7  master-key rotation
 
-   Subscribers in T-1..7 may register for these now; the events will
-   start flowing when the producer code lands in each respective
-   tranche. No-producer events are silently absent — subscribing
-   early is safe."
+   ### Reserved for v0.4 leapfrog (NOT yet produced)
+
+     :flaky-flagged          [:build <j> <n>]  — T1.4 passed-on-retry tag
+     :container-step-started [:build <j> <n>]  — T2.2 docker step kicked
+     :ai-suggested           [:job <name>]     — T3.4 anvil optimize result
+     :provenance-attested    [:build <j> <n>]  — T4.5 sigstore attestation
+
+   Subscribers in v0.3 T1–T7 and v0.4 T1–T4 may register for these
+   now; the events will start flowing when the producer code lands
+   in each respective tranche. No-producer events are silently
+   absent — subscribing early is safe."
   )
 
 ;; ---------------------------------------------------------------------------
@@ -139,24 +146,72 @@
   :secret-rotated)
 
 ;; ---------------------------------------------------------------------------
+;; Event :type constants — reserved for v0.4 leapfrog (no producer yet)
+;; ---------------------------------------------------------------------------
+
+(def evt-flaky-flagged
+  "v0.4 T1.4 — emitted when `anvil.flaky/detect` marks a previously-failed
+   test as :flaky? true (passed on a later attempt within the same build).
+   Payload: {:type :flaky-flagged :build-id <id> :test-id <str>
+             :class <str> :name <str> :retry-count <n>}.
+   Topic: [:build <job> <n>]."
+  :flaky-flagged)
+
+(def evt-container-step-started
+  "v0.4 T2.2 — emitted when the dispatcher hands a `container { … }`
+   block to chengis-core's DockerBackend; the wrapped step begins
+   running inside the named image.
+   Payload: {:type :container-step-started :build-id <id> :image <str>
+             :step-index <n> :workspace <str>}.
+   Topic: [:build <job> <n>]."
+  :container-step-started)
+
+(def evt-ai-suggested
+  "v0.4 T3.4 — emitted after `anvil optimize` runs from the UI's
+   Optimize button on the job page and the Anthropic API response
+   has been parsed into a structured suggestion list.
+   Payload: {:type :ai-suggested :job-name <str> :build-id <id>
+             :suggestions [<map> …]}.
+   Topic: [:job <name>]."
+  :ai-suggested)
+
+(def evt-provenance-attested
+  "v0.4 T4.5 — emitted per attested artifact after sigstore signing
+   writes <artifact>.intoto.jsonl beside it.
+   Payload: {:type :provenance-attested :build-id <id> :artifact <str>
+             :sha256 <str> :attestation-path <str>}.
+   Topic: [:build <job> <n>]."
+  :provenance-attested)
+
+;; ---------------------------------------------------------------------------
 ;; Self-documenting registry
 ;; ---------------------------------------------------------------------------
 
 (def all-event-types
   "Every :type value the bus is expected to carry, in-prod plus
-   v0.3-reserved. Used by docs + a future /metrics page that wants
-   to enumerate observable event types."
+   v0.3 and v0.4 reservations. Used by docs + a future /metrics page
+   that wants to enumerate observable event types."
   #{;; existing
     evt-build-started evt-build-done
     evt-queue-enqueued evt-queue-dispatched
     evt-console-line evt-console-end
     ;; v0.3 reserved
     evt-test-completed evt-problem-found
-    evt-checks-updated evt-schedule-fired evt-secret-rotated})
+    evt-checks-updated evt-schedule-fired evt-secret-rotated
+    ;; v0.4 reserved
+    evt-flaky-flagged evt-container-step-started
+    evt-ai-suggested evt-provenance-attested})
 
 (def reserved-v0-3
-  "Subset of `all-event-types` that's declared for v0.3 but has no
-   producer yet. Subscribing to these is safe and will simply receive
-   no events until the producer code lands."
+  "Subset of `all-event-types` declared for v0.3 (now all shipped, kept
+   for symmetry with reserved-v0-4 + as a historical record of which
+   names came from which board)."
   #{evt-test-completed evt-problem-found
     evt-checks-updated evt-schedule-fired evt-secret-rotated})
+
+(def reserved-v0-4
+  "Subset of `all-event-types` declared for v0.4 leapfrog tranches
+   T1–T4 but not yet produced. Subscribing today is safe — no events
+   flow until each tranche's producer code lands."
+  #{evt-flaky-flagged evt-container-step-started
+    evt-ai-suggested evt-provenance-attested})

@@ -1,7 +1,7 @@
 (ns anvil.features
-  "Feature-flag mechanism for in-progress v0.3 work (T0.2).
+  "Feature-flag mechanism for in-progress v0.3 / v0.4 work.
 
-   v0.3 ships seven Tier-1 features across T1–T7 of the parity board:
+   v0.3 shipped seven Tier-1 features across T1–T7 of the parity board:
 
      | flag                | tranche | shipped in |
      |---------------------|---------|------------|
@@ -13,7 +13,21 @@
      | :secrets            | T6      | v0.3.0     |
      | :mise               | T7      | v0.3.0     |
 
-   While T1–T7 are merging incrementally on master, the flags default
+   v0.4 reserves four leapfrog flags (closed-by-default through the v0.4
+   ship; flipped to true as each tranche merges):
+
+     | flag                | tranche | target     |
+     |---------------------|---------|------------|
+     | :flaky              | T1      | v0.4.0     |
+     | :container-step     | T2      | v0.4.0     |
+     | :ai-authoring       | T3      | v0.4.0     |
+     | :provenance         | T4      | v0.4.0     |
+
+   The AN6 honesty-series tickets (T5 of the v0.4 board) ride on
+   existing flags (translator + dispatcher paths) and do NOT reserve
+   new flag keys — they're parity work, not new feature surfaces.
+
+   While T1–T4 are merging incrementally on master, the flags default
    to `false`. That keeps half-finished UIs and routes invisible to
    dogfood users until the tranche owner flips the flag to `true`
    (typically in the last commit of the tranche). Each feature's
@@ -66,7 +80,37 @@
     ;; With this flag on, the rewrite happens, jar lands in target/,
     ;; archiveArtifacts picks it up. Emits a `[:mvn/deploy-degraded]`
     ;; effect so the rewrite is operator-visible.
-    :mvn-deploy-degrade})
+    :mvn-deploy-degrade
+
+    ;; --- v0.4 leapfrog reservations (T0.2 of the v0.4 board) ---
+    ;;
+    ;; :flaky — T1. Passed-on-retry analysis layered on T1 JUnit infra.
+    ;; A test that failed an earlier attempt but passed a later attempt
+    ;; in the same build gets tagged :flaky? true in test_results.
+    ;; UI: /flaky dashboard + per-job flaky widget. Per AV4-3, passed-
+    ;; on-retry is the ONLY definition at v0.4.0; statistical models
+    ;; defer to v0.4.x.
+    :flaky
+
+    ;; :container-step — T2. `steps { container 'image' { sh '...' } }`
+    ;; routes the wrapped step through chengis-core's DockerBackend
+    ;; (reuses AN5-3 plumbing per AV4-2). Composes with declarative
+    ;; matrix — each cell can declare a different image.
+    :container-step
+
+    ;; :ai-authoring — T3. `anvil init / explain / optimize` CLI calls
+    ;; Anthropic API via ANTHROPIC_API_KEY from env (local-first per
+    ;; AV4-4 — never a hosted anvil service). UI adds an Explain
+    ;; button on /jobs/<j>. Operator opts in per-job via
+    ;; :anvil.ai/explain-enabled? on top of this flag.
+    :ai-authoring
+
+    ;; :provenance — T4. Each artifact emitted by a build gets a
+    ;; sigstore-signed in-toto v1 attestation written as
+    ;; <artifact>.intoto.jsonl. Per AV4-5: sigstore/cosign with
+    ;; Fulcio keyless flow by default; long-lived offline key as
+    ;; fallback for air-gapped operators (see R4).
+    :provenance})
 
 (def ^:private flag-ns "anvil.features")
 

@@ -6,6 +6,7 @@
    `load-flags!`'s file IO here — `anvil.config/load-edn` already has
    its own coverage and we want these tests to stay hermetic."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.set]
             [anvil.features :as features]))
 
 (use-fixtures :each
@@ -18,6 +19,11 @@
              (doseq [f features/known-features]
                (features/set! f (boolean (get before f false)))))))))
 
+(def ^:private v0-4-leapfrog-flags
+  "The four leapfrog reservations made by the v0.4 board T0.2.
+   Closed-by-default until each tranche merges."
+  #{:flaky :container-step :ai-authoring :provenance})
+
 (deftest known-features-covers-the-seven-v0-3-tranches
   (testing "v0.3 board T1–T7 each have a reserved flag"
     (is (= #{:junit :problem-matchers :pr-checks
@@ -26,9 +32,23 @@
            ;; locked on the seven Tier-1 tranches:
            ;;   :scripted-eval      — post-v0.3.0 Tier-3 worthiness
            ;;   :mvn-deploy-degrade — AN5-4 wild-corpus artifact unlock
+           ;;   v0-4-leapfrog-flags — T0.2 of the v0.4 board
            (-> features/known-features
                (disj :scripted-eval)
-               (disj :mvn-deploy-degrade))))))
+               (disj :mvn-deploy-degrade)
+               (clojure.set/difference v0-4-leapfrog-flags))))))
+
+(deftest known-features-reserves-the-four-v0-4-leapfrog-flags
+  (testing "v0.4 board T0.2: :flaky / :container-step / :ai-authoring / :provenance reserved"
+    (is (clojure.set/subset? v0-4-leapfrog-flags features/known-features)
+        "v0.4 leapfrog flags must be in known-features so anvil.edn parses them and routes can gate on them")))
+
+(deftest v0-4-leapfrog-flags-default-closed
+  (testing "AV4-7 + features-closed-by-default: every v0.4 leapfrog flag is false until its tranche merges"
+    (doseq [f v0-4-leapfrog-flags]
+      (features/set! f false)
+      (is (false? (features/enabled? f))
+          (str f " is a v0.4 leapfrog reservation — must default disabled per AV4-7")))))
 
 (deftest enabled?-defaults-to-false
   (testing "every known feature is closed-by-default"
