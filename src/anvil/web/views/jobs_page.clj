@@ -9,6 +9,7 @@
   (:require [anvil.web.views.layout :as layout]
             [anvil.web.views.sparkline :as spark]
             [anvil.web.views.empty-state :as empty-state]
+            [anvil.web.views.ai-modal :as ai-modal]
             [anvil.web.jenkins-api.jobs :as jobs]))
 
 (defn- duration-str [ms]
@@ -133,5 +134,9 @@
             (str next-fire)]))
        [:h3 "Jenkinsfile"]
        [:pre.console (or (:jenkinsfile-source job) "")]
+       ;; v0.4.1 T3.5 — AI Explain / Optimize buttons + modal.
+       ;; buttons-or-nothing returns nil when :ai-authoring is off,
+       ;; so the page stays identical to pre-T3.5 in that case.
+       (ai-modal/buttons-or-nothing job-name)
        [:h3 "Build history"]
        (builds-table-fragment job-name)))))
