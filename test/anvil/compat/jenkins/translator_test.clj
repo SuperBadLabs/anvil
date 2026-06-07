@@ -389,3 +389,108 @@
       (is (= :choice (-> params first :kind)))
       (is (= "nodeLabel" (-> params first :name)))
       (is (= ["ubuntu" "s390x" "arm" "Windows"] (-> params first :choices))))))
+
+;; ---------------------------------------------------------------------------
+;; v0.4 AN6-2 — nested-stages flattening (epsilon + cxf shapes)
+;; ---------------------------------------------------------------------------
+
+(def ^:private epsilon-shape
+  "Mirrors the eclipse-epsilon Jenkinsfile shape that fell through to
+   :unsupported translator.body-skipped in v0.3.3.  A wrapper stage
+   ('Main') groups N sibling stages via `stages { stage { … } stage { … } }`."
+  "pipeline {
+     agent any;
+     stages {
+       stage('Main') {
+         stages {
+           stage('Build') { steps { sh 'mvn install' } };
+           stage('Test')  { steps { sh 'mvn test' } }
+         }
+       }
+     }
+   }")
+
+(deftest an6-2-epsilon-nested-stages-flatten-with-prefix
+  (testing "stage('Main') { stages { stage('Build'), stage('Test') } } flattens to 2 sibling stages with 'Main / X' names"
+    (let [ir (t/parse epsilon-shape)
+          stages (:stages ir)
+          names (mapv :name stages)]
+      (is (= 2 (count stages))
+          "wrapper stage materializes as its two children")
+      (is (= ["Main / Build" "Main / Test"] names)
+          "wrapper name prefixes each child")
+      (is (= "mvn install"
+             (-> stages first :steps first :script))
+          "child :steps survive the flatten unchanged")
+      (is (= "mvn test"
+             (-> stages second :steps first :script))))))
+
+(def ^:private cxf-shape
+  "Mirrors the apache-cxf Jenkinsfile's matrix→stages→stage→stages
+   chain.  matrix-stage runs `agent { label }` + `tools { jdk … }`
+   per cell, then nested-stages groups the actual build steps."
+  "pipeline {
+     agent none;
+     stages {
+       stage('Build') {
+         matrix {
+           agent { label 'ubuntu' };
+           axes { axis { name 'JDK'; values '17', '21' } };
+           stages {
+             stage('JDK build') {
+               agent { label 'ubuntu' };
+               stages {
+                 stage('Compile') { steps { sh 'mvn -B install' } }
+               }
+             }
+           }
+         }
+       }
+     }
+   }")
+
+(deftest an6-2-cxf-matrix-with-nested-stages-fully-expands
+  (testing "matrix → stages → stage → nested-stages expands across both dimensions"
+    (let [ir (t/parse cxf-shape)
+          stages (:stages ir)]
+      (is (= 2 (count stages))
+          "2 axis values × 1 inner stage = 2 cells (the nested-stages
+           flattens inside each cell's content)")
+      (let [names (mapv :name stages)]
+        ;; Each cell carries the matrix prefix `Build [JDK=…]` from
+        ;; expand-matrix-stage, then the inner stage steps come from
+        ;; the nested-stages flatten.
+        (is (every? #(re-find #"^Build " %) names)
+            (str "every cell prefixed with matrix-parent name; got " names)))
+      (is (every? #(= "mvn -B install"
+                      (-> % :steps first :script))
+                  stages)
+          "the deeply-nested sh step survives expansion in every cell"))))
+
+(deftest an6-2-static-stages-still-translate-unchanged
+  (testing "a stage with both steps AND no nested children is still a leaf stage (regression)"
+    (let [ir (t/parse "pipeline { agent any; stages { stage('Solo') { steps { sh 'one' } } } }")
+          stages (:stages ir)]
+      (is (= 1 (count stages)))
+      (is (= "Solo" (-> stages first :name)))
+      (is (= "one" (-> stages first :steps first :script))))))
+
+(deftest an6-2-wrapper-agent-propagates-to-children
+  (testing "an outer stage's `agent { label 'foo' }` becomes each flattened child's :agent"
+    (let [src "pipeline {
+                 agent any;
+                 stages {
+                   stage('Main') {
+                     agent { label 'maven-21' };
+                     stages {
+                       stage('A') { steps { sh 'a' } };
+                       stage('B') { steps { sh 'b' } }
+                     }
+                   }
+                 }
+               }"
+          ir (t/parse src)
+          stages (:stages ir)]
+      (is (= ["Main / A" "Main / B"] (mapv :name stages)))
+      (is (every? #(= "maven-21" (-> % :agent :label)) stages)
+          "every flattened child inherits the wrapper's agent label"))))
