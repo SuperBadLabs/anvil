@@ -971,6 +971,17 @@
         ;; attach the parsed matrix IR; `translate-stages` (below)
         ;; expands cells into one materialized stage per cell.
         matrix-call (find-call body "matrix")
+        ;; v0.4 AN6-2: nested `stages { }` inside a stage body.
+        ;; eclipse-epsilon uses `stages { stage('Main') { stages { … } } }`
+        ;; for grouping; apache-cxf uses matrix → stages → stage →
+        ;; nested stages for tooling-scope. Before AN6-2 both
+        ;; classified as :unsupported/:body-skipped because the
+        ;; wrapper stage carried `[]` for :steps. We detect the
+        ;; nested stages child and attach its parsed children;
+        ;; `translate-stages` flattens, prefixing each child name
+        ;; with the wrapper name and propagating the wrapper's
+        ;; agent/env/post (Jenkins's declarative-pipeline semantics).
+        nested-stages-call (find-call body "stages")
         steps (when steps-call
                 (translate-steps-body (closure-arg steps-call) source closure-objs))
         post (when post-call
@@ -983,12 +994,15 @@
                      ;; treatment as top-level stages (including
                      ;; recursive matrix expansion if anyone nests).
                      (fn [stages-call]
-                       (translate-stages stages-call source closure-objs))))]
+                       (translate-stages stages-call source closure-objs))))
+        nested-children (when nested-stages-call
+                          (translate-stages nested-stages-call source closure-objs))]
     (cond-> {:name stage-name :steps (vec (or steps []))}
       agent-call (assoc :agent (translate-agent-block agent-call))
       env-call   (assoc :environment (translate-environment (closure-arg env-call) source closure-objs))
       post       (assoc :post post)
-      matrix-ir  (assoc :matrix matrix-ir))))
+      matrix-ir  (assoc :matrix matrix-ir)
+      nested-children (assoc :children nested-children))))
 
 (defn- expand-matrix-stage
   "AN5-6: a stage carrying a `:matrix` IR becomes N materialized
@@ -1020,6 +1034,43 @@
            parent-post (assoc :post parent-post))))
      cells)))
 
+(defn- expand-nested-stages-stage
+  "v0.4 AN6-2: a stage carrying `:children` from a nested `stages { }`
+   block becomes N materialized sibling stages, one per inner child.
+   The wrapper's name prefixes each child's display name
+   (\"Main / Build\", \"Main / Test\") so the build console + classifier
+   keep the grouping visible.
+
+   The wrapper's agent / environment / post propagate to every child
+   (Jenkins declarative-pipeline semantics: a wrapper agent applies
+   to every nested stage; a wrapper post runs once per child). If
+   a child already declares the same field, the child wins —
+   matching Jenkins's stage-level override precedence.
+
+   Children that themselves carry `:matrix` or `:children` recurse
+   through `translate-stages` already, so deeper nesting (cxf's
+   matrix→stage→stages→stage shape) flattens correctly in one
+   pass."
+  [parent-stage]
+  (let [children (:children parent-stage)
+        parent-name (:name parent-stage)
+        parent-agent (:agent parent-stage)
+        parent-env (or (:environment parent-stage) {})
+        parent-post (:post parent-stage)]
+    (mapv
+     (fn [child]
+       (let [child-name (str parent-name " / " (:name child))]
+         (cond-> (assoc child :name child-name)
+           (and parent-agent (not (:agent child)))
+           (assoc :agent parent-agent)
+
+           (seq parent-env)
+           (update :environment #(merge parent-env (or % {})))
+
+           (and parent-post (not (:post child)))
+           (assoc :post parent-post))))
+     children)))
+
 (defn- translate-stages
   [stages-call source closure-objs]
   (let [closure (closure-arg stages-call)
@@ -1028,8 +1079,20 @@
          (filter #(= "stage" (:name %)))
          (mapcat (fn [stage-call]
                    (let [stage (translate-stage stage-call source closure-objs)]
-                     (if-let [matrix-ir (:matrix stage)]
-                       (expand-matrix-stage stage matrix-ir)
+                     (cond
+                       (:matrix stage)
+                       (expand-matrix-stage stage (:matrix stage))
+
+                       ;; v0.4 AN6-2 — nested stages flatten before
+                       ;; matrix expansion (cxf's matrix-stage-stages
+                       ;; chain: the matrix's inner stage may itself
+                       ;; have nested stages, which we flatten here
+                       ;; via the recursive translate-stages call in
+                       ;; translate-stage).
+                       (:children stage)
+                       (expand-nested-stages-stage stage)
+
+                       :else
                        [stage]))))
          vec)))
 
