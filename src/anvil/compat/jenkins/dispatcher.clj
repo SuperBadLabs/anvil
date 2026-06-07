@@ -402,10 +402,99 @@
                                        :else "recorder-only — no results glob")}])
         (ok ctx)))))
 
-(defn- h-archive [d step ctx]
-  (log-effect d [:archive {:artifacts (or (:artifacts step) (:arg step))
-                           :args     (:args step)}])
-  (ok ctx))
+(defn- h-archive
+  "v0.3 baseline: recorder-only; logs the `archiveArtifacts` declaration
+   on the effects stream.
+
+   v0.4.1 T4.3 — when the `:provenance` feature flag is on AND ctx
+   supplies :workspace + :job-name + :build-number, additionally:
+     1. Glob the `:artifacts` pattern relative to the workspace
+     2. For each matched file, build an in-toto v1 statement and
+        sign it via cosign (anvil.provenance.cosign/sign-statement!)
+     3. Emit per-artifact `[:provenance/attested {:path :sha256 :bundle}]`
+        or `[:provenance/degraded {:reason :cosign-missing|:cosign-error
+        :error <msg>}]`
+
+   Per AV4-7 (closed-by-default): when the flag is off, behavior is
+   identical to v0.3 — recorder only.  Operators who don't opt in see
+   no provenance effects and no .intoto.jsonl files."
+  [d step ctx]
+  (let [artifacts-pattern (or (:artifacts step) (:arg step))]
+    (log-effect d [:archive {:artifacts artifacts-pattern
+                             :args     (:args step)}])
+    ;; v0.4.1 T4.3 — provenance signing.  Lazy-resolve the helpers so
+    ;; tests / boot paths that don't enable :provenance never load
+    ;; the anvil.provenance.* namespaces.
+    (let [flag-on? (try ((requiring-resolve 'anvil.features/enabled?) :provenance)
+                        (catch Throwable _ false))
+          ws  (:workspace ctx)
+          jn  (:job-name ctx)
+          bn  (:build-number ctx)]
+      (when (and flag-on? artifacts-pattern)
+        (cond
+          (not (and ws jn bn))
+          (log-effect d [:provenance/degraded
+                         {:reason :missing-build-context
+                          :note (cond
+                                  (not ws) "no :workspace in ctx"
+                                  (not jn) "no :job-name in ctx"
+                                  :else "no :build-number in ctx")}])
+
+          :else
+          (let [single-stmt (requiring-resolve 'anvil.provenance.statement/single-artifact-statement)
+                sign!       (requiring-resolve 'anvil.provenance.cosign/sign-statement!)
+                cosign-on?  (requiring-resolve 'anvil.provenance.cosign/cosign-on-path?)
+                sibling-pp  (requiring-resolve 'anvil.provenance.cosign/sibling-attestation-path)
+                fs-glob     (requiring-resolve 'babashka.fs/glob)]
+            (if-not (cosign-on?)
+              (log-effect d [:provenance/degraded
+                             {:reason :cosign-missing
+                              :note "cosign not on PATH — `anvil.provenance.cosign` shells out per AV4-5/R9"}])
+              ;; Glob the workspace for files matching the pattern.
+              ;; Pattern is operator-supplied via `archiveArtifacts 'pattern'` and
+              ;; is interpreted relative to the workspace just like Jenkins does it.
+              (let [matches (try (vec (fs-glob ws artifacts-pattern))
+                                 (catch Throwable e
+                                   (log-effect d [:provenance/degraded
+                                                  {:reason :glob-failed
+                                                   :pattern artifacts-pattern
+                                                   :error (.getMessage e)}])
+                                   []))
+                    key-path (:provenance-key-path ctx)   ; optional R4 offline-key flow
+                    extra-env (cond-> nil
+                                (:provenance-key-password ctx)
+                                (assoc "COSIGN_PASSWORD" (:provenance-key-password ctx)))]
+                (doseq [match matches]
+                  (let [art-path (str match)
+                        bundle   (sibling-pp art-path)]
+                    (try
+                      (let [stmt (single-stmt art-path
+                                              {:job-name jn
+                                               :build-number bn
+                                               :scm (:scm ctx)
+                                               :jenkinsfile (:jenkinsfile-source ctx)
+                                               :started-at (:started-at ctx)
+                                               :finished-at (:finished-at ctx)})
+                            sign-result (sign! stmt (cond-> {:out-path bundle
+                                                             :artifact art-path}
+                                                      key-path (assoc :key-path key-path)
+                                                      extra-env (assoc :extra-env extra-env)))]
+                        (log-effect d [:provenance/attested
+                                       {:path art-path
+                                        :sha256 (get-in stmt [:subject 0 :digest :sha256])
+                                        :bundle bundle
+                                        :cosign-version (:cosign-version sign-result)}]))
+                      (catch clojure.lang.ExceptionInfo e
+                        (log-effect d [:provenance/degraded
+                                       {:reason (or (:reason (ex-data e)) :cosign-error)
+                                        :path art-path
+                                        :error (ex-message e)}]))
+                      (catch Throwable e
+                        (log-effect d [:provenance/degraded
+                                       {:reason :cosign-error
+                                        :path art-path
+                                        :error (.getMessage e)}])))))))))))
+    (ok ctx)))
 
 (defn- h-delete-dir [d _step ctx]
   (log-effect d [:delete-dir {:cwd (:cwd ctx)}])
