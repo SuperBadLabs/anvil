@@ -29,6 +29,7 @@
             [anvil.compat.jenkins.runtime :as runtime]
             [anvil.compat.jenkins.plugins :as plugins]
             [anvil.compat.jenkins.agent :as agent]
+            [anvil.compat.jenkins.scm :as scm]
             [anvil.compat.jenkins.shared-libs :as shared-libs]))
 
 (declare ^:private dispatch-fn run-body propagate-or-ok h-sh)
@@ -718,10 +719,71 @@
                                    :note "recorder-only — no :workspace + :stash-root in ctx"}])
           (ok ctx)))))
 
-(defn- h-checkout [d step ctx]
-  (log-effect d [:checkout {:spec (or (:spec step) (:ref step))
-                            :args (:args step)}])
-  (ok ctx))
+(defn- h-checkout
+  "Handle `:jenkins/checkout` steps.
+
+   For explicit checkouts (user wrote `checkout scm` or
+   `checkout([...])` in the Jenkinsfile) — record an effect and
+   return ok. The runner's pre-build `scm/provision!` already
+   populated the workspace; we don't want to re-clone mid-build.
+
+   For AN8-4 implicit checkouts (synthesized by
+   `anvil.compat.jenkins.scm-lifecycle/inject-implicit-checkout`
+   when the feature flag is on) — actively call `scm/provision!`
+   against the `:scm` config on the step (or in ctx). This closes
+   the workspace-empty-at-stage-1 gap that the AN7-5c receipt
+   documented for zookeeper (`git clean -fxd` → exit 128).
+
+   Idempotent: `scm/provision!` short-circuits to `:refreshed`
+   when `.git` already points at the registered URL/branch."
+  [d step ctx]
+  (let [implicit? (:implicit? step)
+        scm-cfg   (or (:scm step) (:scm ctx))
+        ws        (when-let [w (:workspace ctx)] (io/file w))]
+    (cond
+      ;; Implicit declarative-pipeline checkout with a configured SCM
+      ;; and a real workspace — actually provision.
+      (and implicit? scm-cfg ws)
+      (let [r (scm/provision! ws scm-cfg)]
+        (log-effect d [:checkout {:implicit? true
+                                  :result (:result r)
+                                  :sha (:sha r)
+                                  :url (:url scm-cfg)
+                                  :branch (:branch scm-cfg)
+                                  :error (:error r)
+                                  :source :scm-lifecycle}])
+        (if (= :failed (:result r))
+          ;; A failed implicit checkout means stage 1 will run against
+          ;; an empty / stale workspace — propagate the failure so the
+          ;; classifier sees the honest cause instead of a downstream
+          ;; `git clean -fxd: exit 128` red herring.
+          {:status :failed
+           :error :scm-checkout-failed
+           :message (or (:error r) "implicit checkout failed")
+           :ctx ctx}
+          (ok ctx)))
+
+      ;; Implicit checkout but no SCM configured — record skip and
+      ;; return ok. Preserves pre-AN8-4 behavior for jobs registered
+      ;; without `:scm` (the IR still honestly reflects Jenkins's
+      ;; declarative-lifecycle contract; the operator just hasn't
+      ;; wired the config yet).
+      implicit?
+      (do (log-effect d [:checkout {:implicit? true
+                                    :result :skipped
+                                    :reason (cond
+                                              (nil? scm-cfg) :no-scm-configured
+                                              (nil? ws) :no-workspace
+                                              :else :unknown)
+                                    :source :scm-lifecycle}])
+          (ok ctx))
+
+      ;; Explicit `checkout` step — pre-AN8-4 behavior (record the
+      ;; effect; runner's per-job provision already ran upfront).
+      :else
+      (do (log-effect d [:checkout {:spec (or (:spec step) (:ref step))
+                                    :args (:args step)}])
+          (ok ctx)))))
 
 (defn- h-mail [d step ctx]
   (log-effect d [:mail (or (:args step) (:raw-args step))])

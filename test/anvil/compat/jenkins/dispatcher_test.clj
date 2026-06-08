@@ -3,7 +3,8 @@
    reference orchestrator."
   (:require [clojure.test :refer [deftest is testing]]
             [chengis.engine.dispatcher :as d]
-            [anvil.compat.jenkins.dispatcher :as ad]))
+            [anvil.compat.jenkins.dispatcher :as ad]
+            [anvil.compat.jenkins.scm :as scm]))
 
 (defn- effects [dispatcher]
   @(:effects dispatcher))
@@ -115,3 +116,71 @@
         (is (= "inside script"  (nth (nth evs 1) 1)))
         (is (= "inner-sh"       (-> evs (nth 2) second :cmd)))
         (is (= "after-script"   (-> evs (nth 4) second :cmd)))))))
+
+;; ---------------------------------------------------------------------------
+;; AN8-4 — implicit checkout step handling
+;; ---------------------------------------------------------------------------
+
+(deftest h-checkout-implicit-with-scm-calls-provision
+  (testing "implicit checkout step invokes scm/provision! against ctx :scm config"
+    (let [provision-calls (atom [])
+          fake-result {:result :cloned :sha "0123456789abcdef0000000000000000deadbeef"}]
+      (with-redefs [scm/provision! (fn [ws cfg]
+                                     (swap! provision-calls conj {:ws ws :cfg cfg})
+                                     fake-result)]
+        (let [d (ad/make)
+              scm-cfg {:type :git :url "https://example.com/r.git" :branch "main"}
+              ctx {:workspace "/tmp/some-ws"
+                   :scm scm-cfg}
+              result (d/dispatch d
+                                 {:type :jenkins/checkout :implicit? true}
+                                 ctx)]
+          (is (= :ok (:status result)))
+          (is (= 1 (count @provision-calls)))
+          (is (= scm-cfg (:cfg (first @provision-calls))))
+          (let [evs @(:effects d)
+                [tag payload] (first evs)]
+            (is (= :checkout tag))
+            (is (true? (:implicit? payload)))
+            (is (= :cloned (:result payload)))
+            (is (= "https://example.com/r.git" (:url payload)))))))))
+
+(deftest h-checkout-implicit-without-scm-records-skipped
+  (testing "implicit checkout with no :scm in ctx returns ok and records :skipped"
+    (let [d (ad/make)
+          result (d/dispatch d
+                             {:type :jenkins/checkout :implicit? true}
+                             {:workspace "/tmp/ws"})]
+      (is (= :ok (:status result)))
+      (let [[tag payload] (first @(:effects d))]
+        (is (= :checkout tag))
+        (is (true? (:implicit? payload)))
+        (is (= :skipped (:result payload)))
+        (is (= :no-scm-configured (:reason payload)))))))
+
+(deftest h-checkout-implicit-failed-provision-bubbles
+  (testing "scm/provision! returning :failed yields a :failed dispatcher result"
+    (with-redefs [scm/provision! (constantly {:result :failed
+                                              :error "fatal: repo not found"})]
+      (let [d (ad/make)
+            scm-cfg {:type :git :url "https://nope/repo.git" :branch "main"}
+            result (d/dispatch d
+                               {:type :jenkins/checkout :implicit? true}
+                               {:workspace "/tmp/ws"
+                                :scm scm-cfg})]
+        (is (= :failed (:status result)))
+        (is (= :scm-checkout-failed (:error result)))
+        (is (string? (:message result)))))))
+
+(deftest h-checkout-explicit-unchanged-by-an8-4
+  (testing "explicit checkout step (no :implicit? flag) still just records effect — pre-AN8-4 behavior preserved"
+    (let [provisioned? (atom false)]
+      (with-redefs [scm/provision! (fn [& _] (reset! provisioned? true)
+                                     {:result :cloned})]
+        (let [d (ad/make)
+              result (d/dispatch d
+                                 {:type :jenkins/checkout :spec "main"}
+                                 {:workspace "/tmp/ws"
+                                  :scm {:type :git :url "u" :branch "b"}})]
+          (is (= :ok (:status result)))
+          (is (false? @provisioned?) "explicit checkout must NOT trigger provision (runner already ran it upfront)"))))))
