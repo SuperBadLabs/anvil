@@ -364,6 +364,33 @@
                            :ts (Instant/now)}))))
       (catch Throwable t
         (log/warn t "anvil.flaky: detect-after-build-done failed (non-fatal)"))))
+  ;; v0.4.1 T4.5 — :provenance-attested SSE producer.  Walk the
+  ;; dispatcher's effect stream (already in scope as `effects`),
+  ;; publish one :provenance-attested event per :provenance/attested
+  ;; entry on the per-build topic.  The pill's hx-trigger picks
+  ;; these up and re-renders incrementally as artifacts sign.
+  ;; Gated by :provenance flag for symmetry with T1.4 (the dispatcher
+  ;; itself is also flag-gated, so when flag is off the effect list
+  ;; has no :provenance/attested entries and this loop is a no-op,
+  ;; but cheap to be explicit).
+  (try
+    (when ((requiring-resolve 'anvil.features/enabled?) :provenance)
+      (let [topic-build (requiring-resolve 'anvil.events.topics/topic-build)
+            evt-prov    @(requiring-resolve 'anvil.events.topics/evt-provenance-attested)]
+        (doseq [eff effects
+                :when (= :provenance/attested (first eff))]
+          (let [{:keys [path sha256 bundle cosign-version]} (second eff)]
+            (bus/publish! (topic-build job-name build-number)
+                          {:type evt-prov
+                           :job-name job-name
+                           :build-number build-number
+                           :path path
+                           :sha256 sha256
+                           :bundle bundle
+                           :cosign-version cosign-version
+                           :ts (Instant/now)})))))
+    (catch Throwable t
+      (log/warn t "anvil.provenance: SSE producer failed (non-fatal)")))
   nil)
 
 (defn console-log-for
