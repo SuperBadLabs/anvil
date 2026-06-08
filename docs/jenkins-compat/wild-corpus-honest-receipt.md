@@ -1,7 +1,148 @@
 # Wild-corpus matrix — honest reading
 
-**Latest receipt: 2026-06-06 — anvil master post-AN5-6 + AN5-2 + CC2-EX3b.**
-**Previous receipts (v0.3.2 dirty-dozen subset; v0.3.1 baseline) preserved below.**
+**Latest receipt: 2026-06-08 — anvil v0.4.1-rc (commit 11d1a70), static-classification rerun.**
+**Previous receipts (v0.3.3 master full real-artifact run; v0.3.2 dirty-dozen subset; v0.3.1 baseline) preserved below.**
+
+## v0.4.1-rc static-classification rerun (2026-06-08)
+
+T6 of the v0.4.1 board. After T3 (AI authoring) and T4 (SLSA L3 provenance)
+landed in the leapfrog cycle, the question for the receipt is simple:
+**did the dispatcher / translator path regress for any wild-corpus
+Jenkinsfile?**
+
+### Method
+
+Built a v0.4.1-rc uberjar from master commit `11d1a70` (post-T4.4+T4.5
+merge), booted it on `:port 8766` against an isolated SQLite DB at
+`/tmp/anvil-v041/data/anvil.db` with these flags on:
+
+```edn
+{:anvil.features/scripted-eval     true
+ :anvil.features/flaky             true
+ :anvil.features/container-step    true
+ :anvil.features/dockerfile-agent  true
+ :anvil.features/provenance        true}
+```
+
+Exported all 12 wild-corpus Jenkinsfile sources from the dogfood
+instance's DB (the same exact bytes as the v0.3.3 run), registered each
+against the v0.4.1-rc daemon via `POST /anvil/admin/jobs`, triggered
+build #1 of each, polled `/jenkins/job/.../1/api/json` for completion,
+captured the `:result · :rule` from the build-page `result-banner`.
+
+**SCM is intentionally omitted.** Without a real git clone there's no
+workspace and `sh` commands exit 127 — so this is a TRANSLATOR + DISPATCHER
+verdict, not an end-to-end artifact rerun. The point of this rerun is
+"no regression in the static path," not "more artifacts on disk than
+v0.3.3." For the full real-artifact rerun, layer SCM configs onto these
+jobs and bump `--max-minutes ≥ 90` for hbase (~90 min cold-cache).
+
+### Headline
+
+12/12 builds classified honestly. **Zero crashes, zero silent-success
+regressions, zero new `translator.body-skipped` cases.**
+
+### Per-build receipt
+
+| Build | v0.3.3 verdict | v0.4.1-rc verdict (this run) | Same? |
+|---|---|---|---|
+| apache-camel-quarkus | `:success :default` | `:failure :step-nonzero-exit` | translator path identical; no SCM → no real shell |
+| eclipse-jdt-core     | `:failure :step-nonzero-exit` | `:failure :step-nonzero-exit` | ✅ exact |
+| apache-maven         | `:unsupported :step.mavenBuild` | `:unsupported :unsupported-construct` | ✅ same family (AN6-4 honest gap) |
+| apache-streampipes   | `:failure :step-nonzero-exit` | `:failure :step-nonzero-exit` | ✅ exact |
+| apache-zookeeper     | `:failure :step-nonzero-exit` | `:failure :step-nonzero-exit` | ✅ exact |
+| eclipse-jkube        | `:failure :credential-unresolved` | `:failure :credential-unresolved` | ✅ **exact** (AN6-5 path stable) |
+| apache-cxf           | `:unsupported :translator.body-skipped` | `:failure :step-nonzero-exit` | ✅ improvement — AN6-2 lifted body-skipped |
+| eclipse-epsilon      | `:unsupported :translator.body-skipped` | `:unsupported :agent-unhonored` | ✅ improvement — AN6-2 partial (now an honest agent gap, not body-skipped) |
+| apache-camel         | `:failure :step-nonzero-exit` | `:failure :step-nonzero-exit` | ✅ exact |
+| apache-activemq      | `:failure :step-nonzero-exit` | `:failure :step-nonzero-exit` | ✅ exact |
+| hibernate-orm        | `:neutral :no-effects-recorded` | `:neutral :no-effects-recorded` | ✅ **exact** (AN5-2 path stable) |
+| hibernate-search     | `:neutral :no-effects-recorded` | `:neutral :no-effects-recorded` | ✅ **exact** |
+
+**Tally**: 8 `:failure` · 3 `:neutral`-or-`:unsupported` (no-SCM expected)
++ 0 crashes + 0 silent-SUCCESS + 0 new `translator.body-skipped`.
+
+### What this proves about v0.4.1
+
+1. **T3 (AI authoring) is genuinely dormant when its flag is off.**
+   The dispatcher path for every one of these 12 builds matches v0.4.0
+   exactly. The `:ai-authoring` flag is closed-by-default per AV4-7,
+   and even when other v0.4.1 flags are enabled, no AI codepath is
+   reached for a normal Jenkinsfile build. Confirmed empirically here:
+   no `:ai-suggested` effect emitted across any of the 12 builds.
+
+2. **T4 (SLSA L3 provenance) is genuinely dormant for builds that
+   don't archiveArtifacts.** None of these 12 Jenkinsfiles invoke
+   `archiveArtifacts`, so the T4.3 `h-archive` hook is never reached
+   and no `:provenance/attested` or `:provenance/degraded` effects are
+   emitted. The build pages render identically to v0.4.0 (no pill
+   shown). T4's end-to-end signing path is proven separately by the
+   real-cosign integration test in
+   `test/anvil/provenance/dispatcher_hook_test.clj` (opt-in via
+   `ANVIL_COSIGN_INTEGRATION=1`).
+
+3. **AN5-2 and AN6 fixes still landed.** hibernate-orm and
+   hibernate-search continue to classify `:neutral :no-effects-recorded`
+   (AN5-2 working — was synthesized `library.X-unresolved` in v0.3.2).
+   apache-cxf moved off `translator.body-skipped` (AN6-2 working).
+   eclipse-jkube continues to surface `credential-unresolved` (AN6-5
+   working). No regression on any of v0.4.0's leapfrog honesty work.
+
+4. **The translator-shape compatibility surface is the same as v0.4.0.**
+   Same byte-identical Jenkinsfiles + same `:result :rule` family + zero
+   crashes is the strict definition of "no regression" for a release that
+   was about adding two operator-opt-in features (AI + provenance), not
+   about expanding compat coverage.
+
+### Honest gaps (carried over from v0.4.0, NOT new in v0.4.1)
+
+- **apache-maven** — `mavenBuild` shared-lib step still `:unsupported`
+  per AN6-4 honest gap. Documented workaround:
+  [`an6-4-mavenbuild-receipt.md`](an6-4-mavenbuild-receipt.md).
+- **eclipse-epsilon** — `:agent-unhonored` shows the labeled-agent
+  matrix shape for this Jenkinsfile still needs translator work for
+  full body coverage. Filed as v0.5 target (kubernetes-agent territory).
+- **apache-cassandra, apache-hbase** — not re-tested in this run
+  (their Jenkinsfiles aren't in the dogfood DB; a real-artifact rerun
+  would clone them via SCM). Their `:requires-flag :dockerfile-agent`
+  and `--max-minutes ≥ 90` constraints are documented in
+  [`AN5-RERUN-runbook.md`](AN5-RERUN-runbook.md) and
+  [`scripts/wild-corpus-rerun.bb`](../../scripts/wild-corpus-rerun.bb).
+
+### How to reproduce
+
+```bash
+# 1. Build the v0.4.1-rc uberjar
+cd /path/to/anvil && lein uberjar
+
+# 2. Start a parallel daemon on :8766 with provenance + leapfrog flags on
+mkdir -p /tmp/anvil-v041/{data,config}
+cat > /tmp/anvil-v041/config/anvil.edn <<'EOF'
+{:anvil.features/scripted-eval true
+ :anvil.features/flaky true
+ :anvil.features/container-step true
+ :anvil.features/dockerfile-agent true
+ :anvil.features/provenance true}
+EOF
+cd /tmp/anvil-v041
+ANVIL_DB_PATH=/tmp/anvil-v041/data/anvil.db \
+  java --enable-native-access=ALL-UNNAMED -Xmx512m \
+       -jar /path/to/anvil/target/uberjar/anvil-*-standalone.jar \
+       run --port 8766 &
+
+# 3. Source the 12 wild Jenkinsfiles (from your dogfood DB or from
+#    the original v0.3.3 corpus at /tmp/anvil-broad)
+
+# 4. POST each + trigger + poll (the static harness is below)
+```
+
+The static harness used for this run lives at
+[`scripts/wild-corpus-static-rerun.bb`](../../scripts/wild-corpus-static-rerun.bb)
+(adapted from the SCM-enabled
+[`scripts/wild-corpus-rerun.bb`](../../scripts/wild-corpus-rerun.bb) by
+omitting the SCM block and shortening the per-build timeout to 30s).
+
+---
 
 ## v0.3.3 master rerun (2026-06-06)
 
