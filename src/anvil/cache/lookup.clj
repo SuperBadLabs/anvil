@@ -28,18 +28,23 @@
 ;; Config
 ;; ---------------------------------------------------------------------------
 
-(defn- cache-opts
-  "Read the cache opts from anvil.edn.
-   Keys:
-     :anvil.cache/store-root — path string (default ~/.anvil/cache)
-     :anvil.cache/max-bytes  — LRU cap in bytes (default nil = unbounded)"
-  []
-  (try
-    (let [edn (config/load-edn "anvil" {})]
-      (cond-> {}
-        (:anvil.cache/store-root edn) (assoc :store-root (:anvil.cache/store-root edn))
-        (:anvil.cache/max-bytes edn)  (assoc :max-bytes  (:anvil.cache/max-bytes edn))))
-    (catch Throwable _ {})))
+;; Cached at first read — anvil.config/load-edn does file IO + debug log
+;; on every call, and hit?/fetch/record! land on the dispatcher hot path
+;; (called for every step of every build). Re-reading the EDN per-step is
+;; unnecessary; config is a process-lifetime concern. To reload on edit,
+;; restart the daemon (same posture as anvil.features).
+;;
+;; Copilot review on #81 flagged the original per-call read as a perf
+;; smell; fix lands in fix/v0.5-review-followups.
+(def ^:private cache-opts
+  (memoize
+   (fn []
+     (try
+       (let [edn (config/load-edn "anvil" {})]
+         (cond-> {}
+           (:anvil.cache/store-root edn) (assoc :store-root (:anvil.cache/store-root edn))
+           (:anvil.cache/max-bytes edn)  (assoc :max-bytes  (:anvil.cache/max-bytes edn))))
+       (catch Throwable _ {})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API
