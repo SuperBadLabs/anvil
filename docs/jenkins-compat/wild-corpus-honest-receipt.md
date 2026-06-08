@@ -17,7 +17,7 @@ shipped by v0.5.0 are active.
 |---|---|---|
 | AN7-1 | Synthetic shims for apache-maven / activemq / zookeeper / jdt-core | +4 type-B `:success` (tests skipped, plumbing verified) |
 | AN7-2 | Groovy GString `${X}` interpolation in declarative agent labels | Fixes label resolution for builds that parametrize agent names |
-| AN7-3 | `:file` credential type (GPG key injection via volume mount) | eclipse-jkube `:credential-unresolved` path is now honerable |
+| AN7-3 | `:file` credential type (GPG key injection via volume mount) | eclipse-jkube `:credential-unresolved` path is now honorable |
 | AN7-4 | External `@Library` Git resolver (clone + cache at `~/.anvil/libs/`) | hibernate-orm / hibernate-search move from `:neutral :no-effects-recorded` toward type-A |
 | AN7-6 | Verdict-provenance **Type** column in this receipt | Transparency: type-A vs type-B `:success` |
 
