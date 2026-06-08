@@ -56,8 +56,9 @@ Tests: `anvil.cache.key-test` (15 invariants).
 | Same image, one env var value changed | **MISS** | Sorted env string changes. |
 | Same image, one env var added | **MISS** | Sorted env string changes. |
 | Same image, one env var removed | **MISS** | Sorted env string changes. |
-| Same image tag, but docker pulled a new layer | **HIT (wrong! — known limitation)** | If using raw tag (no `docker inspect`), the key doesn't know about the updated layers. See §T1.3 limitation. |
-| New docker image digest (tag repinned or `docker pull` forced fresh) | **MISS** | `docker inspect` returns the new `.Id`. |
+| Same image tag, layer updated upstream, **`docker inspect` available** | **MISS** (correct) | `docker inspect` returns the new `.Id`, image-digest field changes. |
+| Same image tag, layer updated upstream, **`docker inspect` NOT available** (fallback to raw tag string) | **HIT (wrong! — known limitation)** | Without `docker inspect`, the key falls back to the literal tag string. Different underlying images sharing the tag collide. Operators on rootless / remote-docker / sandboxed setups hit this; fix is on the T1.5 roadmap. |
+| New docker image digest (tag repinned or `docker pull` forced fresh, `docker inspect` available) | **MISS** | `docker inspect` returns the new `.Id`. |
 | `withCredentials` block active | **bypass** | Cache is skipped entirely for steps running with secret env bindings — cached stdout could leak secrets across operator boundaries. |
 | Step exited non-zero | **not stored** | Only exit 0 results are cached. A failed step's output is not a valid cached result. |
 | Two builds with different job names | **HIT** (cache shared) | The key doesn't include job name — the step cache is per-step-identity, not per-build. This is intentional: `mvn install` on the same pom across different jobs shares the dep resolution cache. |
