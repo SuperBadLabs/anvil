@@ -6,6 +6,13 @@
 ;; agent { label … } container builds via the wild-corpus-agents.edn
 ;; overlay. Harness fans triggers out in parallel, polls all three
 ;; daemons, tallies on completion.
+;;
+;; NOTE: This is the v0.4.1-T6 receipt artifact — the shard map is
+;; frozen at the hand-coded HeMan=4/Mario=5/Luigi=5 split that
+;; saturated Mario at load 28 while Luigi sat idle. For new runs,
+;; prefer `scripts/wild-corpus-rerun.bb --fleet=...` which queries
+;; each daemon's numExecutors and apportions via Hamilton's method
+;; with heavyweight rotation (v0.5, PR #72).
 
 (require '[babashka.http-client :as http]
          '[babashka.process :as p]
