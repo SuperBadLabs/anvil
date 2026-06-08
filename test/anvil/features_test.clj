@@ -31,6 +31,14 @@
   #{:flaky :container-step :ai-authoring :provenance
     :dockerfile-agent})
 
+(def v0-5-scale-flags
+  "v0.5 board T0.2 reservations: cache + cost + GitLab MR + Bitbucket
+   PR + chengis multi-tenant adapter. Closed-by-default until each
+   tranche merges per AV5-7."
+  #{:cache :cache-remote :cost-reporting
+    :gitlab-mr :bitbucket-pr
+    :multi-tenant})
+
 (deftest known-features-covers-the-seven-v0-3-tranches
   (testing "v0.3 board T1–T7 each have a reserved flag"
     (is (= #{:junit :problem-matchers :pr-checks
@@ -40,10 +48,12 @@
            ;;   :scripted-eval      — post-v0.3.0 Tier-3 worthiness
            ;;   :mvn-deploy-degrade — AN5-4 wild-corpus artifact unlock
            ;;   v0-4-leapfrog-flags — T0.2 of the v0.4 board
+           ;;   v0-5-scale-flags    — T0.2 of the v0.5 board
            (-> features/known-features
                (disj :scripted-eval)
                (disj :mvn-deploy-degrade)
-               (clojure.set/difference v0-4-leapfrog-flags))))))
+               (clojure.set/difference v0-4-leapfrog-flags)
+               (clojure.set/difference v0-5-scale-flags))))))
 
 (deftest known-features-reserves-the-four-v0-4-leapfrog-flags
   (testing "v0.4 board T0.2: :flaky / :container-step / :ai-authoring / :provenance reserved"
@@ -56,6 +66,18 @@
       (features/set! f false)
       (is (false? (features/enabled? f))
           (str f " is a v0.4 leapfrog reservation — must default disabled per AV4-7")))))
+
+(deftest known-features-reserves-the-six-v0-5-scale-flags
+  (testing "v0.5 board T0.2: cache + cost + gitlab-mr + bitbucket-pr + multi-tenant reserved"
+    (is (clojure.set/subset? v0-5-scale-flags features/known-features)
+        "v0.5 scale flags must be in known-features so anvil.edn parses them and routes can gate on them")))
+
+(deftest v0-5-scale-flags-default-closed
+  (testing "AV5-7 + features-closed-by-default: every v0.5 scale flag is false until its tranche merges"
+    (doseq [f v0-5-scale-flags]
+      (features/set! f false)
+      (is (false? (features/enabled? f))
+          (str f " is a v0.5 scale reservation — must default disabled per AV5-7")))))
 
 (deftest enabled?-defaults-to-false
   (testing "every known feature is closed-by-default"

@@ -184,13 +184,58 @@
   :provenance-attested)
 
 ;; ---------------------------------------------------------------------------
+;; Event :type constants — reserved for v0.5 scale (no producer yet)
+;; ---------------------------------------------------------------------------
+
+(def evt-cache-hit
+  "v0.5 T1.3 — emitted when a step's cache lookup hits and anvil
+   replays cached stdout/stderr/exit/artifacts without running.
+   Payload: {:type :cache-hit :build-id <id> :step-index <n>
+             :cache-key <hex-str> :saved-ms <n>}.
+   Topic: [:build <job> <n>]."
+  :cache-hit)
+
+(def evt-cache-miss
+  "v0.5 T1.3 — emitted when a step's cache lookup misses and anvil
+   falls through to running the step. Pairs with a subsequent cache
+   write if the run succeeds.
+   Payload: {:type :cache-miss :build-id <id> :step-index <n>
+             :cache-key <hex-str>}.
+   Topic: [:build <job> <n>]."
+  :cache-miss)
+
+(def evt-cost-tallied
+  "v0.5 T2.2 — emitted once per build after the cost recorder sums
+   wall-time × per-host rates across all steps.
+   Payload: {:type :cost-tallied :build-id <id> :total-cents <n>
+             :wall-ms <n> :host->cents {<host> <n>}}.
+   Topic: [:build <job> <n>]."
+  :cost-tallied)
+
+(def evt-mr-checked
+  "v0.5 T3.1 — emitted after the GitLab MR subscriber PATCHes a merge
+   request check status on :build-done.
+   Payload: {:type :mr-checked :build-id <id> :provider :gitlab
+             :project-id <str> :mr-iid <n> :status <str>}.
+   Topic: [:build <job> <n>]."
+  :mr-checked)
+
+(def evt-pr-checked
+  "v0.5 T3.2 — emitted after the Bitbucket PR-check subscriber posts
+   a build status to a Bitbucket pull request on :build-done.
+   Payload: {:type :pr-checked :build-id <id> :provider :bitbucket
+             :workspace <str> :repo <str> :pr-id <n> :status <str>}.
+   Topic: [:build <job> <n>]."
+  :pr-checked)
+
+;; ---------------------------------------------------------------------------
 ;; Self-documenting registry
 ;; ---------------------------------------------------------------------------
 
 (def all-event-types
   "Every :type value the bus is expected to carry, in-prod plus
-   v0.3 and v0.4 reservations. Used by docs + a future /metrics page
-   that wants to enumerate observable event types."
+   v0.3, v0.4, and v0.5 reservations. Used by docs + a future
+   /metrics page that wants to enumerate observable event types."
   #{;; existing
     evt-build-started evt-build-done
     evt-queue-enqueued evt-queue-dispatched
@@ -200,7 +245,11 @@
     evt-checks-updated evt-schedule-fired evt-secret-rotated
     ;; v0.4 reserved
     evt-flaky-flagged evt-container-step-started
-    evt-ai-suggested evt-provenance-attested})
+    evt-ai-suggested evt-provenance-attested
+    ;; v0.5 reserved
+    evt-cache-hit evt-cache-miss
+    evt-cost-tallied
+    evt-mr-checked evt-pr-checked})
 
 (def reserved-v0-3
   "Subset of `all-event-types` declared for v0.3 (now all shipped, kept
@@ -215,3 +264,16 @@
    flow until each tranche's producer code lands."
   #{evt-flaky-flagged evt-container-step-started
     evt-ai-suggested evt-provenance-attested})
+
+(def reserved-v0-5
+  "Subset of `all-event-types` declared for v0.5 scale tranches T1–T3.
+   Producers come in:
+     - evt-cache-hit / evt-cache-miss  → T1.3 (cache dispatch wiring)
+     - evt-cost-tallied                → T2.2 (cost recorder)
+     - evt-mr-checked                  → T3.1 (GitLab MR subscriber)
+     - evt-pr-checked                  → T3.2 (Bitbucket PR subscriber)
+   Subscribing today is safe — no events flow until each tranche's
+   producer code lands."
+  #{evt-cache-hit evt-cache-miss
+    evt-cost-tallied
+    evt-mr-checked evt-pr-checked})
