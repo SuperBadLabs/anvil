@@ -1598,7 +1598,14 @@
      (fn [{:keys [axes env stages tools]}]
        (let [cell-label (mx-decl/cell-name axes)
              cell-name (str (:name parent-stage) " [" cell-label "]")
-             all-steps (vec (mapcat :steps stages))
+             ;; AN8-3b — substitute `${AXIS}` / `$AXIS` refs in every step
+             ;; body BEFORE flattening to all-steps. Without this, real
+             ;; Jenkinsfiles (apache-camel) hit MissingPropertyException
+             ;; in the Groovy script evaluator because PLATFORM / JDK_NAME
+             ;; aren't bound in the runtime. Substitution is a per-cell
+             ;; rewrite of the IR — each cell sees its own axis values.
+             interpolated-stages (mx-decl/interpolate-stage-steps stages axes)
+             all-steps (vec (mapcat :steps interpolated-stages))
              ;; AN8-3 composition: parent-stage tools provide the base;
              ;; matrix-level tools (the more-specific declaration) win on
              ;; collision. Tools are vectors of {:type :version} maps —

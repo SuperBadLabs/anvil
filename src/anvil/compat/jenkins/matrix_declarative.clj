@@ -157,6 +157,121 @@
        (str/join ", ")))
 
 ;; ---------------------------------------------------------------------------
+;; AN8-3b — `${AXIS}` / `$AXIS` substitution in step bodies
+;;
+;; Real Jenkinsfiles (apache-camel + the wild corpus) reference matrix axis
+;; variables deep inside step bodies — `echo "Build for ${PLATFORM}-${JDK_NAME}"`,
+;; `sh "./mvnw $MAVEN_PARAMS ..."`, `script { if ("${PLATFORM}" == ...) }`.
+;; The Groovy script evaluator that runs those bodies sees the axis names
+;; as unbound variables → MissingPropertyException, build dies before
+;; reaching mvn.
+;;
+;; This is the translator-time substitution layer of the fix: walk every
+;; step body during matrix expansion and substitute axis refs at
+;; translator time. This mirrors the substitution strategy PR #113
+;; introduced for top-level `def NAME =` bindings, extended here to also
+;; cover matrix axes — and applied recursively over scope-wrapper bodies
+;; (timeout, dir, retry, with-env, script {}), parallel branches, and the
+;; GString contexts each step's payload carries.
+;;
+;; Substitution is OPT-IN per step shape and never touches:
+;;   - :raw-args (preserves unknown-step diagnostic surface)
+;;   - bash refs to variables that don't name an axis (`$HOME`,
+;;     `$BRANCH_NAME` when not axis-named) — left as-is so the runner's
+;;     environment can resolve them
+;;   - Single-quoted Groovy strings still flow through here when their
+;;     literal text happens to contain an axis name, because the
+;;     translator records :const arg values directly into the same
+;;     :script / :message keys. In real Jenkinsfiles axis refs are
+;;     always written in GString form (double-quoted, with $ refs); the
+;;     literal-`$X`-inside-single-quotes false-positive surface is empty
+;;     in the wild corpus.
+;; ---------------------------------------------------------------------------
+
+(defn- axis-pattern
+  "Compile a regex matching `${NAME}` or `$NAME(?!\\w)` for a single axis."
+  [^String axis-name]
+  (java.util.regex.Pattern/compile
+   (str "\\$\\{" (java.util.regex.Pattern/quote axis-name) "\\}"
+        "|\\$" (java.util.regex.Pattern/quote axis-name) "(?!\\w)")))
+
+(defn interpolate-axis-refs
+  "Replace `${AXIS}` and `$AXIS` references in `s` from `axes`
+   (a {name → value} map). Leaves unrecognized refs (`$HOME`, etc.) alone.
+
+   Returns the substituted string, or `s` unchanged if there's nothing
+   to substitute (empty axes, no `$` in s, blank input)."
+  [s axes]
+  (let [t (str s)]
+    (if (or (str/blank? t) (empty? axes) (not (str/includes? t "$")))
+      t
+      (reduce-kv
+       (fn [acc k v]
+         (let [name-str (str k)
+               pat (axis-pattern name-str)]
+           (str/replace acc pat
+                        (java.util.regex.Matcher/quoteReplacement (str v)))))
+       t
+       axes))))
+
+(declare interpolate-step)
+
+(defn- interpolate-steps [steps axes]
+  (mapv #(interpolate-step % axes) steps))
+
+(defn- interpolate-branches
+  "Walk a `:branches {name [step …]}` map (parallel step shape)."
+  [branches axes]
+  (into {} (for [[k v] branches] [k (interpolate-steps v axes)])))
+
+(defn interpolate-step
+  "Substitute axis refs in a single step IR. Recurses through scope-wrapper
+   bodies (`:body`) and parallel branches (`:branches`). Substitutes the
+   string-valued payload keys most likely to carry GString axis refs:
+
+     :script       — sh + bat command text
+     :message      — echo text
+     :body-source  — Groovy source of script {} blocks (apache-camel's
+                     `script { if (\"${PLATFORM}\" == ...) }` shape)
+     :artifacts    — archive-artifacts glob
+     :results      — junit testResults glob
+     :path         — dir path
+     :label        — sh label
+
+   Other keys pass through untouched. When `axes` is empty, returns the
+   step unchanged with no allocation."
+  [step axes]
+  (if (or (empty? axes) (not (map? step)))
+    step
+    (let [sub #(interpolate-axis-refs % axes)
+          step (cond-> step
+                 (string? (:script step))      (update :script sub)
+                 (string? (:message step))     (update :message sub)
+                 (string? (:body-source step)) (update :body-source sub)
+                 (string? (:artifacts step))   (update :artifacts sub)
+                 (string? (:results step))     (update :results sub)
+                 (string? (:path step))        (update :path sub)
+                 (string? (:label step))       (update :label sub))]
+      (cond-> step
+        (vector? (:body step))     (update :body interpolate-steps axes)
+        (map?    (:branches step)) (update :branches interpolate-branches axes)))))
+
+(defn interpolate-stage-steps
+  "Top-level helper for translator/expand-matrix-stage. Walk every step
+   inside `stages` (a vector of {:name … :steps [...]} maps) and return
+   a new stages vector with axis refs substituted. Pure; no I/O.
+
+   When `axes` is empty, returns `stages` unchanged."
+  [stages axes]
+  (if (empty? axes)
+    stages
+    (mapv (fn [stage]
+            (cond-> stage
+              (vector? (:steps stage))
+              (update :steps interpolate-steps axes)))
+          stages)))
+
+;; ---------------------------------------------------------------------------
 ;; Parsing (T4.1) — extract IR from translator cdata
 ;; ---------------------------------------------------------------------------
 

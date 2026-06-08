@@ -1,5 +1,59 @@
 # anvil — changelog
 
+## 0.6.3 — AN8-3b: matrix-axis substitution in step bodies (2026-06-08)
+
+Fixes the dogfood `wild-apache-camel` build #5 regression: matrix step
+bodies referencing axis variables (`echo "${PLATFORM}-${JDK_NAME}"`,
+`sh "$X ..."`, `script { if ("${PLATFORM}" == ...) }`) reached the
+Groovy script evaluator as literal `$NAME` text. Groovy then raised
+`MissingPropertyException` and the build died before reaching `mvn`.
+
+### Fix
+
+`anvil.compat.jenkins.matrix-declarative` gains an
+`interpolate-axis-refs` helper plus a recursive `interpolate-step` /
+`interpolate-stage-steps` walker. `translator/expand-matrix-stage`
+threads each matrix cell's `:axes` map through the walker before
+flattening to `:steps`, so every cell's IR carries axis-resolved text
+in its substitution-eligible payload keys:
+
+- `:script` (sh + bat)
+- `:message` (echo)
+- `:body-source` (script {} Groovy bodies — camel's
+  `script { if ("${PLATFORM}" == ...) }` shape)
+- `:artifacts` (archive-artifacts), `:results` (junit), `:path` (dir),
+  `:label` (sh-step label)
+
+The walker recurses through `:body` (timeout / dir / retry / with-env /
+with-credentials) and `:branches` (parallel). `:raw-args` is never
+substituted (preserves unknown-step diagnostic surface). Bash refs that
+don't name an axis (`$HOME`, `$BRANCH_NAME`) pass through unchanged.
+
+### Composes with AN8-3 (PR #108)
+
+AN8-3 interpolated axis variables in `tools{}` version templates
+(`jdk "${JAVA_VERSION}"`). AN8-3b extends the same per-cell axis-binding
+notion to step bodies. Both paths use the same substitution semantics:
+`${NAME}` / `$NAME(?!\\w)`, with `Matcher/quoteReplacement` so axis
+values containing `$` don't break Java regex replacement.
+
+### Tests
+
+17 new tests in `matrix_axis_step_substitution_test`:
+- Pure substitution helpers: braced / bare forms, word-boundary, no
+  allocation on empty input, regex-quote of `$` in replacement.
+- Step-walker: sh / echo / script body-source / scope-wrapper recursion
+  (timeout body), parallel-branch recursion, `:raw-args` preserved,
+  empty-axes no-op.
+- End-to-end matrix expansion: camel-shape Jenkinsfile parses and
+  substitutes both axes in echo + script bodies; bash refs survive;
+  non-matrix stages untouched.
+- Wild-corpus regression: `apache__camel__main__Jenkinsfile.Jenkinsfile`
+  has every cell's combined step text resolve both `${PLATFORM}` and
+  `${JDK_NAME}` to its axis value with no literal `$NAME` survivors.
+
+All 1142 existing tests still pass.
+
 ## 0.6.2 — security: Vault path traversal + runtime-param leak (2026-06-08)
 
 Security patch release covering two issues shipped in v0.6.0 / v0.6.1.
