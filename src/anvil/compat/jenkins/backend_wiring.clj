@@ -67,6 +67,95 @@
               ["-v" (str host-path ":" container-path ":ro")])
             file-mounts)))
 
+;; ---------------------------------------------------------------------------
+;; AN7-5 — resource-limits parsing from `agent { docker { args '…' } }`
+;;
+;; Jenkins's `docker { args '…' }` block is the operator's natural place to
+;; tune container resources (`--memory=4g`, `--cpus=2`, …). chengis-core's
+;; `DockerBackend` already honors structured `:resource-limits` (memory-mb,
+;; cpus, pids-max, cpu-shares) — but it ignores anvil's `:extra-args` string
+;; entirely. So unless we parse those flags out and convert them to the
+;; structured shape, an operator writing `args '--memory=4g'` gets silent
+;; nothing.
+;;
+;; This is the AN7-5 minimum: the four well-known resource flags get
+;; recognized and converted; anything else stays in extra-args (where
+;; chengis-core continues to drop it). When the inline-docker fallback
+;; runs (file-mounts case), it splits extra-args directly into argv, so
+;; the resource flags still work via that path even without this parse —
+;; but most builds don't use file-mounts, and the non-inline path
+;; previously had no way to honor them.
+
+(def ^:private ^:const memory-flag-pattern
+  ;; Matches `--memory=4g`, `--memory=512m`, `--memory=4G`, or `--memory=4096`
+  ;; (raw MB if no suffix). Docker accepts `b/k/m/g`; we accept `m/g` (and
+  ;; bare numbers as MB) since those are the operator-relevant units for
+  ;; build tuning.
+  #"--memory=(\d+)([gGmM]?)")
+
+(def ^:private ^:const cpus-flag-pattern
+  ;; `--cpus=2`, `--cpus=1.5`. Chengis-core expects a double.
+  #"--cpus=(\d+(?:\.\d+)?)")
+
+(def ^:private ^:const pids-limit-flag-pattern
+  ;; `--pids-limit=512`.
+  #"--pids-limit=(\d+)")
+
+(def ^:private ^:const cpu-shares-flag-pattern
+  ;; `--cpu-shares=1024`. Note hyphenation: docker uses `--cpu-shares`.
+  #"--cpu-shares=(\d+)")
+
+(defn- memory->mb
+  "Parse a docker --memory= value into MB (chengis-core's :memory-mb shape).
+   Bare digits = MB; `g/G` = ×1024; `m/M` = ×1; rejects unparseable units."
+  [digits unit]
+  (let [n (Long/parseLong digits)]
+    (case (and unit (str/lower-case unit))
+      ("" nil) n
+      "m"      n
+      "g"      (* n 1024)
+      nil)))
+
+(defn parse-resource-limits
+  "Extract `:resource-limits` (the structured shape chengis-core's DockerBackend
+   honors) from a docker `args '…'` string. Returns
+     {:resource-limits {…} :residual-extra-args \"…with parsed flags stripped\"}.
+
+   The residual string is what we hand to chengis-core's :extra-args (where
+   it's silently dropped) AND to the inline-docker path (where it's split into
+   argv). Stripping the parsed flags from the residual prevents
+   double-application on the inline path.
+
+   Unknown flags are preserved verbatim in the residual. Numerically-invalid
+   recognised flags (`--memory=potato`) don't match the digit-anchored regex
+   and stay in the residual — chengis-core / docker will surface the error
+   at run time the same way a hand-edited extra-args would."
+  [extra-args]
+  (if (or (nil? extra-args) (str/blank? extra-args))
+    {:resource-limits {} :residual-extra-args extra-args}
+    (let [memory-match (re-find memory-flag-pattern extra-args)
+          cpus-match (re-find cpus-flag-pattern extra-args)
+          pids-match (re-find pids-limit-flag-pattern extra-args)
+          shares-match (re-find cpu-shares-flag-pattern extra-args)
+          memory-mb (when memory-match (memory->mb (nth memory-match 1) (nth memory-match 2)))
+          cpus (when cpus-match (Double/parseDouble (nth cpus-match 1)))
+          pids-max (when pids-match (Long/parseLong (nth pids-match 1)))
+          cpu-shares (when shares-match (Long/parseLong (nth shares-match 1)))
+          limits (cond-> {}
+                   memory-mb  (assoc :memory-mb memory-mb)
+                   cpus       (assoc :cpus cpus)
+                   pids-max   (assoc :pids-max pids-max)
+                   cpu-shares (assoc :cpu-shares cpu-shares))
+          residual (-> extra-args
+                       (str/replace memory-flag-pattern "")
+                       (str/replace cpus-flag-pattern "")
+                       (str/replace pids-limit-flag-pattern "")
+                       (str/replace cpu-shares-flag-pattern "")
+                       (str/replace #"\s+" " ")
+                       str/trim)]
+      {:resource-limits limits
+       :residual-extra-args (when-not (str/blank? residual) residual)})))
+
 (defn backend-for-ctx
   "Pick an `ExecutionBackend` for this step's context.
 
@@ -78,6 +167,12 @@
    corresponding `-v host:container:ro` flags are appended to extra-args
    so the docker backend mounts credential files read-only.
 
+   AN7-5: `--memory=`, `--cpus=`, `--pids-limit=`, `--cpu-shares=` in the
+   agent's args string are parsed into chengis-core's structured
+   `:resource-limits`. This is the path that makes
+   `agent { docker { image '…' args '--memory=4g' } }` actually request
+   the memory cap.
+
    Constructing a `DockerBackend` is cheap (no docker daemon contact
    until `prepare-workspace`), so it's safe to construct one per step
    in this AN5-3 first-cut mode. AN5-3b will cache one per build/stage.
@@ -86,18 +181,21 @@
   [ctx]
   (if-let [docker-spec (docker-agent-spec (:active-agent ctx))]
     (let [base-extra-args (or (:extra-args docker-spec) "")
+          {:keys [resource-limits residual-extra-args]} (parse-resource-limits base-extra-args)
           file-mount-args (file-mounts->extra-args (:file-mounts ctx))
-          ;; Concatenate any existing extra-args with the -v flags.
-          ;; base-extra-args is a string (from the agent spec), so
-          ;; we rebuild as a single string with the -v pairs appended.
+          ;; Concatenate the residual (post-parse) extra-args with the -v flags.
+          ;; The parsed resource flags are now in `resource-limits` and will
+          ;; be applied via chengis-core's structured key; keeping them in
+          ;; extra-args too would double-apply them on the inline-docker path.
           extra-args-str (if file-mount-args
-                           (str/trim (str base-extra-args " "
-                                         (str/join " " file-mount-args)))
-                           base-extra-args)]
+                           (str/trim (str (or residual-extra-args "") " "
+                                          (str/join " " file-mount-args)))
+                           residual-extra-args)]
       (docker/docker-backend
-       {:image (:image docker-spec)
-        :mode :per-step
-        :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}))
+       (cond-> {:image (:image docker-spec)
+                :mode :per-step
+                :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}
+         (seq resource-limits) (assoc :resource-limits resource-limits))))
     (backend/local-shell-backend {})))
 
 ;; ---------------------------------------------------------------------------
