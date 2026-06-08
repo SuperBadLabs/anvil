@@ -111,21 +111,54 @@
                   (catch Exception _ ""))]
     (or (second (re-find #"<strong>([^<]+?)</strong>" html)) "?")))
 
+(defn- stats-paths [name]
+  [(format "/tmp/anvil-v041/workspaces/%s/1" name)
+   (format "/tmp/anvil-v041/target/anvil-builds/%s/1" name)
+   (format "/tmp/anvil-v041/artifacts/%s/1" name)])
+
 (defn- artifact-stats [host name]
-  ;; Workspace lives at /tmp/anvil-v041/target/anvil-builds/<job>/1
-  ;; or /tmp/anvil-v041/workspaces/<job>/1 — probe both
-  (let [paths [(format "/tmp/anvil-v041/workspaces/%s/1" name)
-               (format "/tmp/anvil-v041/target/anvil-builds/%s/1" name)
-               (format "/tmp/anvil-v041/artifacts/%s/1" name)]
-        cmd-find (str/join " || "
-                    (for [p paths]
+  ;; Workspace lives under /tmp/anvil-v041 — see stats-paths for the
+  ;; three locations we probe (workspaces, target/anvil-builds,
+  ;; artifacts), in `||` short-circuit order.
+  ;;
+  ;; The remote command MUST reach the remote shell with its inner
+  ;; single quotes (`'*.jar'`, `'%s\n'`) intact. The original code
+  ;; wrapped cmd-find in an outer `'...'` for `ssh host bash -c '...'`,
+  ;; but single quotes can't nest in POSIX shell — the remote bash
+  ;; alternates quoted/unquoted regions, dropping `\n` to literal `n`
+  ;; and gluing all sizes onto one unparseable line (verified
+  ;; empirically on the 2026-06-08 fleet rerun: luigi/cassandra
+  ;; reported 0 jars when 425 jars / 252 MB were on disk).
+  ;;
+  ;; Fix: pass cmd-find as a single argv element to ssh. ssh already
+  ;; runs the remote command through the user's configured shell in
+  ;; non-interactive mode (no `bash -c` layer needed), and the inner
+  ;; quotes are parsed once, correctly, on the remote side.
+  (let [cmd-find (str/join " || "
+                    (for [p (stats-paths name)]
                       (format "[ -d %s ] && find %s -type f -name '*.jar' -printf '%%s\\n' 2>/dev/null" p p)))
         out (if (= host "localhost")
               (:out (p/shell {:out :string :err :string :continue true} "bash" "-c" cmd-find))
-              (:out (p/shell {:out :string :err :string :continue true} "ssh" host "bash" "-c" (str "'" cmd-find "'"))))
+              (:out (p/shell {:out :string :err :string :continue true} "ssh" host cmd-find)))
         sizes (->> (str/split-lines (str out))
                    (keep #(when-not (str/blank? %) (try (Long/parseLong (str/trim %)) (catch Exception _ nil)))))]
     {:jar-count (count sizes) :total-bytes (reduce + 0 sizes)}))
+
+(defn- independent-jar-count
+  "Independent cross-check of artifact-stats's jar count, using a
+   different command shape (`find ... | wc -l` instead of
+   `-printf '%s\\n'`). If this disagrees with the receipt for a
+   non-localhost host, the ssh quoting is broken again."
+  [host name]
+  (let [cmd (str/join " || "
+              (for [p (stats-paths name)]
+                (format "[ -d %s ] && find %s -type f -name '*.jar' 2>/dev/null | wc -l" p p)))
+        out (-> (p/shell {:out :string :err :string :continue true}
+                         (if (= host "localhost") "bash" "ssh")
+                         (if (= host "localhost") "-c" host)
+                         cmd)
+                :out str str/trim)]
+    (try (Long/parseLong out) (catch Exception _ -1))))
 
 (def all-jobs (mapcat val shards))
 
@@ -213,4 +246,22 @@
               (count results)
               (reduce + (map :jar-count results))
               (/ (reduce + (map :total-bytes results)) 1024.0 1024.0 1024.0))
+
+      ;; Sanity check: cross-verify the receipt's jar count for the
+      ;; first non-localhost build via an independent ssh `find | wc -l`.
+      ;; A MISMATCH here is the canary for the SSH quoting bug
+      ;; (see artifact-stats docstring). Prefer a SUCCESS build that
+      ;; should have produced jars; fall back to any non-localhost
+      ;; build if none succeeded.
+      (when-let [r (or (some #(when (and (not= "localhost" (:host %))
+                                         (= "SUCCESS" (:result %))
+                                         (pos? (:jar-count %))) %)
+                             results)
+                       (some #(when (not= "localhost" (:host %)) %) results))]
+        (let [indep (independent-jar-count (:host r) (:name r))
+              ok? (= (:jar-count r) indep)]
+          (printf "\nSANITY CHECK [%s/%s]: receipt=%d jars, independent ssh wc -l=%d → %s\n"
+                  (:host r) (:name r) (:jar-count r) indep
+                  (if ok? "OK" "MISMATCH (ssh quoting suspected — see artifact-stats)"))))
+
       (spit "/tmp/anvil-v041/fleet-results.edn" (pr-str results)))))
