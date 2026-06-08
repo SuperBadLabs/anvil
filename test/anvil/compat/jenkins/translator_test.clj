@@ -708,3 +708,40 @@
       (is (not (some #{"OS"} (get-in ir [:agent :unresolved-vars])))
           "the resolvable variable is NOT in the unresolved list"))))
 
+;; ---------------------------------------------------------------------------
+;; Copilot review fixes on PR #83
+;; ---------------------------------------------------------------------------
+
+(deftest an7-2-extract-gstring-vars-rejects-numeric-tokens
+  (testing "${1} is NOT a valid Groovy identifier — must not be extracted"
+    (let [extract @(requiring-resolve 'anvil.compat.jenkins.translator/extract-gstring-vars)]
+      (is (= [] (extract "${1}"))
+          "${1} → no vars (numeric leading char)")
+      (is (= [] (extract "$1"))
+          "$1 → no vars (numeric leading char in bare form)")
+      (is (= ["PLATFORM"] (extract "${PLATFORM}"))
+          "alpha-leading ident still works")
+      (is (= ["_INTERNAL"] (extract "${_INTERNAL}"))
+          "underscore-leading still works")
+      (is (= [] (extract "${1abc}"))
+          "1abc has numeric leading → reject")
+      (is (= ["abc1"] (extract "${abc1}"))
+          "abc1 has alpha leading → ok"))))
+
+(deftest an7-2-interpolate-handles-dollar-in-replacement-value
+  (testing "Matcher.quoteReplacement: $ and \\ in parameter defaults don't break regex-replace"
+    (let [interpolate @(requiring-resolve 'anvil.compat.jenkins.translator/interpolate-gstring)
+          ;; parameters vector shape: [{:name "X" :kind :string :default-value "..."}]
+          params [{:name "RC" :kind :string :default-value "1.0$RC1"}
+                  {:name "X"  :kind :string :default-value "a\\b"}]]
+      ;; Resolve ${RC} to a value containing `$` — would crash with
+      ;; IllegalArgumentException ("named-capturing group <RC1>")
+      ;; without quoteReplacement at translator.clj:952.
+      (let [r (interpolate "lib-${RC}" params)]
+        (is (= "lib-1.0$RC1" (:resolved r))
+            "literal $ in replacement preserved as literal"))
+      ;; Backslash — `\$` is Java regex escape for `$`.
+      (let [r (interpolate "path-${X}" params)]
+        (is (= "path-a\\b" (:resolved r))
+            "literal \\ in replacement preserved as literal")))))
+

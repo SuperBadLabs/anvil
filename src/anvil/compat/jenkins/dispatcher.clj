@@ -286,13 +286,36 @@
   "Cache-aware wrapper around shell-execute. Called when :execute? is true,
    the :cache feature flag is on, and the active-agent is docker-shaped.
 
-   Returns the same {:exit :stdout :stderr :streamed?} map as shell-execute."
+   Returns the same {:exit :stdout :stderr :streamed?} map as shell-execute.
+
+   ## Streaming-mode bypass (Copilot review on #81)
+
+   When `ctx` carries a `:log-file` (streaming mode, used by the Jenkins
+   API runner so `/consoleText` and the live log-tail thread see output
+   as it happens), `shell-execute` redirects both stdout and stderr to
+   that file at the OS level and returns empty `:stdout`/`:stderr`
+   buffers. That breaks the cache two ways:
+
+     - On cache miss, we'd store empty stdout/stderr — future cache hits
+       would silently replay nothing.
+     - On cache hit, we'd return cached stdout/stderr but never write
+       them to the log-file — live consoleText consumers see no output.
+
+   The minimal correct fix is to disable the cache in streaming mode.
+   A future revision can tee: stream to the log-file AND buffer for
+   caching. Until then, prefer correctness over hit-rate."
   [cmd ctx]
   (let [docker-spec (docker-spec ctx)
         image-tag   (when docker-spec (:image docker-spec))]
-    (if-not image-tag
+    (cond
+      ;; Streaming mode — see docstring. Skip cache entirely.
+      (:log-file ctx) (shell-execute cmd ctx)
+
       ;; Not a docker step — fall through to plain shell-execute
-      (shell-execute cmd ctx)
+      (not image-tag) (shell-execute cmd ctx)
+
+      :else
+      (do
       (let [image-digest (resolve-docker-digest image-tag)
             env          (:env ctx {})
             cache-key    (try
@@ -346,7 +369,7 @@
                                 :now          (System/currentTimeMillis)})
                       (catch Throwable t
                         (log/warn t "anvil.dispatcher: cache write failed (non-fatal)")))))
-                result))))))))
+                result)))))))))
 
 (defn- ok [ctx & {:keys [output stdout status-code]}]
   (cond-> {:status :ok :ctx ctx}

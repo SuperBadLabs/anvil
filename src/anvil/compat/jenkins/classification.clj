@@ -69,8 +69,16 @@
 
 (def ^:private unsupported-effects
   "Effect tags that mean the runner couldn't honor a construct. These
-   classify the build as :unsupported, NOT silent success."
-  #{:unknown})
+   classify the build as :unsupported, NOT silent success.
+
+   - :unknown — generic translator-side bail (AN4 honesty baseline).
+   - :translator/unresolved-interpolation — v0.5 AN7-2 emits this when
+     a Groovy `${X}` in a declarative-pipeline string context references
+     a parameter whose default isn't statically resolvable. Without this
+     entry the new effect would slip past the classifier and the build
+     would silently classify as :default. Copilot review on PR #83
+     flagged the missing wiring."
+  #{:unknown :translator/unresolved-interpolation})
 
 (def ^:private agent-shapes-this-runner-cannot-honor
   "Agent shapes anvil v0.3 silently degrades. With chengis-core 0.2's

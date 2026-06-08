@@ -861,13 +861,18 @@
      '$PLATFORM'         → ['PLATFORM']
      '$PLATFORM-$ARCH'   → ['PLATFORM' 'ARCH']
      '${PLATFORM}${JDK}' → ['PLATFORM' 'JDK']   (curly-brace if present)
+     '${1}'              → []                    (numeric not a valid Groovy ident)
      'linux-build'       → []                    (no variables)"
   [text]
   (let [t (str text)
         ;; Match both ${VARNAME} (with braces) and $VARNAME (bare form).
         ;; The alternation lists the braced form first so it takes priority
         ;; when both could match at the same position.
-        matches (re-seq #"\$\{(\w+)\}|\$([A-Za-z_]\w*)" t)]
+        ;;
+        ;; The braced form uses `[A-Za-z_]\w*` (not `\w+`) so numeric tokens
+        ;; like `${1}` aren't treated as variable names — Groovy doesn't
+        ;; either. Copilot review on #83 flagged the earlier `\w+`.
+        matches (re-seq #"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)" t)]
     (->> matches
          (mapv (fn [[_ braced bare]] (or braced bare)))
          distinct
@@ -931,12 +936,21 @@
           ;; from Groovy's getText(). Replace $VARNAME with the resolved value.
           ;; Use a word-boundary pattern to avoid substituting `$PLATFORM` in
           ;; `$PLATFORM_X` as if it were `$PLATFORM`.
+          ;;
+          ;; The replacement string MUST be quoted via Matcher/quoteReplacement
+          ;; because Java's regex-replace treats `$` and `\` specially in
+          ;; replacements (`$1` is a group ref, `\$` is an escaped literal).
+          ;; A parameter default that happens to contain `$` (e.g. shell
+          ;; snippet, file path with version like `lib-1.0$RC`) would
+          ;; otherwise throw `IllegalArgumentException` at runtime or
+          ;; silently mis-substitute. Copilot review on #83 flagged this.
           {:resolved (reduce
                       (fn [s var-name]
                         (str/replace s
                                      (java.util.regex.Pattern/compile
                                       (str "\\$\\{" var-name "\\}|\\$" var-name "(?!\\w)"))
-                                     (get resolutions var-name)))
+                                     (java.util.regex.Matcher/quoteReplacement
+                                      (str (get resolutions var-name)))))
                       gstring-text
                       vars)})))))
 

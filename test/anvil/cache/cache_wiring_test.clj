@@ -170,3 +170,37 @@
                  (:stdout (lookup/fetch store-opts k)))
               "synthetic pre-populated hit resolves correctly"))
         (finally (fs/delete-tree tmp))))))
+
+;; ---------------------------------------------------------------------------
+;; Streaming-mode bypass — Copilot review on PR #81 (fix in #following PR)
+;;
+;; When ctx carries :log-file, shell-execute redirects stdout/stderr to that
+;; file at OS level and returns empty buffers. The cache wrapper must bypass
+;; in this mode — otherwise it would (a) cache empty payloads on miss and
+;; (b) replay cached buffers without writing them to log-file on hit, breaking
+;; /consoleText for live API-runner builds.
+;; ---------------------------------------------------------------------------
+
+(deftest streaming-mode-bypasses-cache-entirely
+  (testing "cached-execute does NOT call lookup/record when :log-file is set"
+    (features/set! :cache true)
+    (let [fetch-calls  (atom 0)
+          record-calls (atom 0)
+          shell-calls  (atom 0)
+          cached-fn   @(requiring-resolve 'anvil.compat.jenkins.dispatcher/cached-execute)]
+      (with-redefs [lookup/fetch   (fn [& _] (swap! fetch-calls inc) nil)
+                    lookup/record! (fn [& _] (swap! record-calls inc) nil)]
+        ;; Use a tmp file as the log-file marker
+        (let [log-file (java.io.File/createTempFile "anvil-stream-test-" ".log")]
+          (try
+            ;; Mock shell-execute via a redirected call — the real one would
+            ;; do IO. We intercept at the private var.
+            (with-redefs [anvil.compat.jenkins.dispatcher/shell-execute
+                          (fn [_cmd _ctx]
+                            (swap! shell-calls inc)
+                            {:exit 0 :stdout "" :stderr "" :streamed? true})]
+              (cached-fn "echo hi" (assoc (make-docker-ctx) :log-file log-file))
+              (is (= 1 @shell-calls)   "shell-execute invoked once (the actual run)")
+              (is (= 0 @fetch-calls)   "lookup/fetch NEVER called in streaming mode")
+              (is (= 0 @record-calls)  "lookup/record! NEVER called in streaming mode"))
+            (finally (.delete log-file))))))))

@@ -71,6 +71,18 @@
     (is (= :unsupported (:result c1)))
     (is (= :unsupported-construct (:rule c1)))))
 
+(deftest unresolved-interpolation-classifies-unsupported
+  (testing "v0.5 AN7-2 — :translator/unresolved-interpolation effect classifies build as :unsupported per AV5-6"
+    (let [c (c/classify-build {:status :ok}
+                              [[:translator/unresolved-interpolation
+                                {:vars ["PLATFORM"]
+                                 :context "agent { label \"${PLATFORM}\" }"}]]
+                              {})]
+      (is (= :unsupported (:result c))
+          "Copilot review on #83: the new effect must reach the unsupported classifier path")
+      (is (= :unsupported-construct (:rule c))
+          "shares the rule with the :unknown effect — both represent unhonored constructs"))))
+
 ;; ---------------------------------------------------------------------------
 ;; Non-zero sh exit → :failure
 ;; ---------------------------------------------------------------------------
