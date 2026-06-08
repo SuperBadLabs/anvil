@@ -71,12 +71,29 @@ the container via chengis-core's `-e KEY=VAL` flag emission.
 
 1. Edit `anvil.edn` (or place an `anvil.edn` under `$ANVIL_CONFIG_DIR`)
    with a `:anvil.build-overrides` map.
-2. Restart the anvil daemon — overrides are read once at first use
-   (lazy + cached); no hot-reload by design (same contract as
-   `agents.edn` / `libraries.edn`).
-3. Re-trigger the affected builds. The daemon log shows the merged
-   `:resource-limits` in the docker invocation; the container's
-   environment shows the merged `:env-extra`.
+2. **v0.6 T4** — Save the file. The daemon's filesystem watcher detects
+   the change and clears the override cache automatically; the next
+   build sees the new shape without restart.
+   *Note*: hot-reload only works when `anvil.edn` is on disk (the
+   `$ANVIL_CONFIG_DIR` or `./config/` paths). When using the
+   classpath-bundled default, restart the daemon to pick up changes.
+3. Re-trigger the affected builds. The daemon log shows
+   `anvil.build-overrides: anvil.edn changed (ENTRY_MODIFY) — clearing
+   cache for hot-reload` and the new merged values reach the docker
+   invocation.
+
+### v0.5.x → v0.6 hot-reload migration
+
+Before v0.6 T4, this section read "restart the daemon — overrides are
+read once at first use, no hot-reload by design." That contract changed
+in v0.6 T4 — file-watch via `java.nio.file.WatchService` runs on a
+daemon thread started at boot. Operators on v0.5.x still need restart.
+Operators on v0.6+ can edit-and-save.
+
+If you want the old behavior (e.g. running anvil in an immutable
+container), the watcher silently no-ops when no on-disk `anvil.edn`
+exists, so the restart-to-reload contract holds for the classpath
+case.
 
 ## Verification
 
