@@ -43,8 +43,12 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- cmd-add [argv]
-  (let [opts [["-t" "--type TYPE" "Credential type" :default "string"]
+  (let [opts [["-t" "--type TYPE"
+               "Credential type: string, username-password, file"
+               :default "string"]
               ["-d" "--description DESC" "Description"]
+              ["-p" "--path PATH"
+               "(file type) host filesystem path to the file credential"]
               ["-h" "--help"]]
         {:keys [arguments options summary errors]} (tools-cli/parse-opts argv opts)]
     (cond
@@ -52,23 +56,65 @@
       (do (run! println errors) 3)
 
       (or (:help options) (empty? arguments))
-      (do (println "Usage: anvil secrets add <id> [--type string|username-password] [--description ...]")
-          (println "Value is read from stdin so it never appears in `ps`.")
+      (do (println "Usage: anvil secrets add <id> [--type string|username-password|file] [--description ...]")
+          (println "  string / username-password: value is read from stdin.")
+          (println "  file: use --path /host/path/to/file (no stdin read).")
           (println summary)
           (if (:help options) 0 3))
 
       :else
       (let [id (first arguments)
-            value (str/trim (read-stdin-secret))
             ctype (keyword (:type options))]
-        (ensure-db!)
-        (creds/add! {:id id
-                     :type ctype
-                     :value value
-                     :description (or (:description options) "")})
-        (println (str "Added credential " id " (type: " (name ctype) ")"))
-        (println (str "  preview: " (preview value)))
-        0))))
+        (cond
+          ;; AN7-3: :file credential — store the host path as value.
+          ;; Validate the path exists and is readable before storing.
+          (= ctype :file)
+          (let [raw-path (:path options)
+                path (when raw-path (str/trim raw-path))]
+            (cond
+              (str/blank? path)
+              (do (println "Error: --path is required for --type file")
+                  (println "  Example: anvil secrets add my-key --type file --path /run/secrets/keyring.asc")
+                  3)
+
+              (not (.exists (java.io.File. ^String path)))
+              (do (println (str "Error: path does not exist: " path))
+                  (println "  Ensure the file exists before registering a file credential.")
+                  3)
+
+              (not (.isFile (java.io.File. ^String path)))
+              (do (println (str "Error: path is not a regular file: " path))
+                  (println "  Directories are not valid file credentials; specify the exact file path.")
+                  3)
+
+              (not (.canRead (java.io.File. ^String path)))
+              (do (println (str "Error: file not readable: " path))
+                  (println "  Ensure anvil has read permission on the file.")
+                  3)
+
+              :else
+              (do (ensure-db!)
+                  (creds/add! {:id id
+                               :type :file
+                               :value path
+                               :description (or (:description options) "")})
+                  (println (str "Added file credential " id))
+                  (println (str "  host path: " path))
+                  (println (str "  mounted at: /anvil-creds/" id " (read-only) inside docker steps"))
+                  (println (str "  env var:  set by `variable:` binding in withCredentials"))
+                  0)))
+
+          ;; string / username-password: read value from stdin.
+          :else
+          (let [value (str/trim (read-stdin-secret))]
+            (ensure-db!)
+            (creds/add! {:id id
+                         :type ctype
+                         :value value
+                         :description (or (:description options) "")})
+            (println (str "Added credential " id " (type: " (name ctype) ")"))
+            (println (str "  preview: " (preview value)))
+            0))))))
 
 (defn- cmd-list [_argv]
   (ensure-db!)

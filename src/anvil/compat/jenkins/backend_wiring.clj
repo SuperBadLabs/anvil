@@ -38,7 +38,8 @@
    across steps in the same stage) — a substantive speedup, requires
    wiring `prepare-workspace` into `h-agent-stage-enter` and `cleanup`
    into `h-agent-stage-leave`."
-  (:require [chengis.engine.backend :as backend]
+  (:require [clojure.string :as str]
+            [chengis.engine.backend :as backend]
             [chengis.engine.backend.docker :as docker]
             [taoensso.timbre :as log]))
 
@@ -54,12 +55,27 @@
     {:image      (-> active-agent :docker :image)
      :extra-args (-> active-agent :docker :args)}))
 
+(defn- file-mounts->extra-args
+  "Convert AN7-3 file-mount specs [{:host-path :container-path …}] into
+   extra `docker run` args: `-v /host/path:/anvil-creds/<id>:ro` flags.
+   The `:ro` suffix makes the mount read-only so steps can't accidentally
+   write back to the operator's credential store."
+  [file-mounts]
+  (when (seq file-mounts)
+    (mapcat (fn [{:keys [host-path container-path]}]
+              ["-v" (str host-path ":" container-path ":ro")])
+            file-mounts)))
+
 (defn backend-for-ctx
   "Pick an `ExecutionBackend` for this step's context.
 
      - `(:active-agent ctx)` has a `:docker {…}` shape → return a fresh
         per-step `DockerBackend` for its image
      - otherwise → return `LocalShell`
+
+   AN7-3: When ctx has :file-mounts (from `h-with-credentials`), the
+   corresponding `-v host:container:ro` flags are appended to extra-args
+   so the docker backend mounts credential files read-only.
 
    Constructing a `DockerBackend` is cheap (no docker daemon contact
    until `prepare-workspace`), so it's safe to construct one per step
@@ -68,10 +84,19 @@
    Returns a record implementing the `ExecutionBackend` protocol."
   [ctx]
   (if-let [docker-spec (docker-agent-spec (:active-agent ctx))]
-    (docker/docker-backend
-     {:image (:image docker-spec)
-      :mode :per-step
-      :extra-args (:extra-args docker-spec)})
+    (let [base-extra-args (or (:extra-args docker-spec) "")
+          file-mount-args (file-mounts->extra-args (:file-mounts ctx))
+          ;; Concatenate any existing extra-args with the -v flags.
+          ;; base-extra-args is a string (from the agent spec), so
+          ;; we rebuild as a single string with the -v pairs appended.
+          extra-args-str (if file-mount-args
+                           (str/trim (str base-extra-args " "
+                                         (str/join " " file-mount-args)))
+                           base-extra-args)]
+      (docker/docker-backend
+       {:image (:image docker-spec)
+        :mode :per-step
+        :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}))
     (backend/local-shell-backend {})))
 
 ;; ---------------------------------------------------------------------------
