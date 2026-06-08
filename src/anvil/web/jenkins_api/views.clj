@@ -30,7 +30,11 @@
    "mode" "NORMAL"
    "nodeDescription" "anvil (drop-in Jenkins replacement)"
    "nodeName" ""
-   "numExecutors" 2
+   ;; Reflect the daemon's actual worker-pool size (v0.4.2: configurable
+   ;; via :anvil.queue/workers / ANVIL_WORKERS; default max(2, cores/4)).
+   ;; Hardcoding 2 here made fleet drivers that read numExecutors for
+   ;; sharding decisions blind to the per-host capacity.
+   "numExecutors" (or (:max-workers (queue/config-snapshot)) 2)
    "description" (str (v/version-string))
    "jobs" (mapv (fn [job]
                   {"_class" "hudson.model.FreeStyleProject"

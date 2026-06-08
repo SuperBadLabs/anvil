@@ -76,6 +76,70 @@ bb scripts/wild-corpus-rerun.bb --subset=1
 That runs only `apache-activemq` — useful for sanity-checking the
 agents.edn load before committing to a 12-build run.
 
+### Fleet mode (v0.4.2 — CPU-weighted shard distribution)
+
+When more than one daemon is online, pass `--fleet=URL1,URL2,...` to
+distribute the corpus proportionally to each daemon's `numExecutors`.
+Apache-hbase and apache-cassandra carry `:heavyweight? true` and
+rotate across hosts each cycle so the same box never absorbs every
+long-runner.
+
+```bash
+# Query each daemon for its worker count (numExecutors), then
+# apportion 14 builds proportionally.
+bb scripts/wild-corpus-rerun.bb \
+   --fleet=http://heman:8765,http://mario:8765,http://luigi:8765 \
+   --cycle=0 \
+   --max-minutes=90
+
+# Explicit per-host weight override (host shared with other work):
+bb scripts/wild-corpus-rerun.bb \
+   --fleet=http://heman:8765:4,http://mario:8765:2,http://luigi:8765:12 \
+   --cycle=1
+
+# Dry-run the plan before committing to a multi-hour run:
+bb scripts/wild-corpus-rerun.bb --fleet=... --plan-only
+```
+
+Bump `--cycle` by 1 each rerun. With 3 hosts and 2 heavyweights, three
+cycles cover all rotation positions; over time each box is heavyweight-
+free in one cycle out of three.
+
+This replaces the v0.4.1-T6 hand-coded 4/5/5 split that put 5 jobs
+(including two concurrent maven builds) on 12-core Mario — load avg
+28 — while 56-core Luigi sat at 0.4 with zero containers. The fleet
+plan is sanity-printed at startup and reproduced in the markdown
+receipt's "Per-host load" table.
+
+#### Prereq: bump worker count on multi-core daemons
+
+The fleet driver reads each daemon's `numExecutors` (the value the
+daemon reports at `/jenkins/api/json`) as its weight. Before v0.4.2
+that number was hardcoded to 2 regardless of host capacity; now it
+reflects the actual worker pool size, picked at boot via (highest
+precedence first):
+
+1. `ANVIL_WORKERS=N` env var
+2. `:anvil.queue/workers N` in `~/.anvil/anvil.edn` (or wherever
+   `ANVIL_CONFIG_DIR` points)
+3. `max(2, cores/4)` default
+
+```edn
+;; anvil.edn — give a 56-core host 14 workers
+{:anvil.queue/workers 14}
+```
+
+The daemon logs the source at startup:
+
+```
+anvil queue: starting 14 worker(s) [source=config, cores=56]
+```
+
+If you don't set anything, the default lands you at sensible numbers
+(12c→3, 32c→8, 56c→14) — but always overshoot if your hosts share the
+box with other work, since each maven build pulls 8–12 threads of its
+own JVM thread pool on top.
+
 ## Step 4 — Read the receipt
 
 `/tmp/wild-corpus-rerun.md` has a markdown table of every build with:

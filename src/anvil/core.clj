@@ -29,9 +29,27 @@
            (catch NumberFormatException _ 8080))
       8080)))
 
+(defn- resolve-worker-count
+  "Pick the worker pool size. Highest precedence first:
+     1. `ANVIL_WORKERS` env var (operator override at boot)
+     2. `:anvil.queue/workers` in `anvil.edn`
+     3. `queue/default-worker-count` (max(2, cores/4))
+
+   Returns `[n source]` so the boot log can tell operators which knob
+   they're on — invaluable when an over-saturated fleet host doesn't
+   match the daemon-side config you thought you shipped."
+  []
+  (or (when-let [s (System/getenv "ANVIL_WORKERS")]
+        (try [(Integer/parseInt s) :env]
+             (catch NumberFormatException _ nil)))
+      (let [cfg ((requiring-resolve 'anvil.config/load-edn) "anvil" {})
+            n (:anvil.queue/workers cfg)]
+        (when (pos-int? n) [n :config]))
+      [(queue/default-worker-count) :default]))
+
 (defn- run-daemon [args]
   (let [port (parse-port args)
-        worker-count (or (some-> (System/getenv "ANVIL_WORKERS") Integer/parseInt) 2)
+        [worker-count worker-source] (resolve-worker-count)
         latch (CountDownLatch. 1)]
     (log/info (str "Starting " (v/version-string)))
     ;; Initialize SQLite persistence on the conventional path
@@ -72,6 +90,9 @@
           (try (reg! job-name expr trigger-fn)
                (catch Throwable t
                  (log/warn t (str "anvil.scheduler: register " job-name " failed")))))))
+    (log/info (format "anvil queue: starting %d worker(s) [source=%s, cores=%d]"
+                      worker-count (name worker-source)
+                      (.availableProcessors (Runtime/getRuntime))))
     (queue/start-workers! worker-count runner/run-build!)
     (server/start! {:port port})
     (.addShutdownHook (Runtime/getRuntime)
