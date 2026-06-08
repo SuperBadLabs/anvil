@@ -1496,6 +1496,40 @@
     ((requiring-resolve 'anvil.features/enabled?) :dockerfile-agent)
     (catch Throwable _ false)))
 
+(defn- dockerfile-multistage-feature-on?
+  "v0.6 T3 — the :anvil.features/dockerfile-multistage flag gates
+   `--target` forwarding + the matching cache-key extension. When off,
+   a dockerfile spec carrying :target is honored *without* `--target`
+   (same as v0.4 AN6-3 behavior) so the existing single-stage path is
+   never broken by an unknown flag value."
+  []
+  (try
+    ((requiring-resolve 'anvil.features/enabled?) :dockerfile-multistage)
+    (catch Throwable _ false)))
+
+(defn- publish-dockerfile-built-event!
+  "Publish a :dockerfile-built event to the per-build bus topic when we
+   can identify a build. Best-effort — a missing bus or bad ctx never
+   aborts the step. Mirrors `publish-cache-event!` above."
+  [ctx df-result filename target]
+  (try
+    (let [publish!    (requiring-resolve 'anvil.events.bus/publish!)
+          topic-build (requiring-resolve 'anvil.events.topics/topic-build)
+          jn  (:job-name ctx)
+          bn  (:build-number ctx)]
+      (when (and jn bn)
+        (publish! (topic-build jn bn)
+                  (cond-> {:type :dockerfile-built
+                           :job-name jn
+                           :build-number bn
+                           :dockerfile-path filename
+                           :image-tag (:tag df-result)
+                           :cache-hit? (boolean (:cached? df-result))
+                           :duration-ms (or (:duration-ms df-result) 0)}
+                    target (assoc :target target)))))
+    (catch Throwable t
+      (log/debug t "anvil.dispatcher: dockerfile-built publish failed (non-fatal)"))))
+
 (defn- unhonored-container-agent-shape
   "Returns a keyword naming the unhonored agent shape when `:agent step`
    is a container/cluster shape that this runner cannot actually execute
@@ -1619,16 +1653,35 @@
                              (dockerfile-agent-feature-on?))
                     (let [filename (or (:filename dockerfile-spec) "Dockerfile")
                           ws (:workspace ctx)
+                          ;; v0.6 T3 — forward :target + :dir only when
+                          ;; the multistage flag is on. With the flag
+                          ;; off, both fall back to nil and the v0.4
+                          ;; AN6-3 single-stage path is preserved.
+                          multistage? (dockerfile-multistage-feature-on?)
+                          target (when multistage? (:target dockerfile-spec))
+                          dir    (when multistage? (:dir dockerfile-spec))
                           ensure! (requiring-resolve 'anvil.tools.dockerfile/ensure-image!)
-                          r (ensure! ws filename {:execute? true})]
+                          r (ensure! ws filename {:execute? true
+                                                  :target target
+                                                  :dir dir})]
                       (log-effect d [(if (:cached? r)
                                        :dockerfile/image-cached
                                        :dockerfile/image-built)
-                                     {:tag (:tag r)
-                                      :exit (:exit r)
-                                      :filename filename
-                                      :workspace ws
-                                      :missing-dockerfile? (boolean (:missing-dockerfile? r))}])
+                                     (cond-> {:tag (:tag r)
+                                              :exit (:exit r)
+                                              :filename filename
+                                              :workspace ws
+                                              :missing-dockerfile? (boolean (:missing-dockerfile? r))}
+                                       target (assoc :target target)
+                                       dir    (assoc :dir dir))])
+                      ;; v0.6 T3 — emit :dockerfile-built SSE event on
+                      ;; every honored build (cache hit OR miss). Topic
+                      ;; lookup requires job-name + build-number on ctx;
+                      ;; absent those (record-only / unit-test paths),
+                      ;; the helper silently no-ops.
+                      (when (and (not (:missing-dockerfile? r))
+                                 (:tag r))
+                        (publish-dockerfile-built-event! ctx r filename target))
                       r))
         dockerfile-upgrade (when (and df-result (zero? (:exit df-result)))
                              {:docker {:image (:tag df-result)}

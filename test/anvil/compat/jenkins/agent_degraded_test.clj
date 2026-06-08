@@ -181,3 +181,140 @@
                    (get-in (:ctx r) [:active-agent :docker :image]))))))
       (finally
         ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)))))
+
+;; ---------------------------------------------------------------------------
+;; v0.6 T3 — multi-stage dockerfile-agent (`--target`)
+;; ---------------------------------------------------------------------------
+
+(deftest dockerfile-multistage-target-forwarded-to-ensure-image
+  (testing "with both :dockerfile-agent + :dockerfile-multistage ON, the
+            dockerfile spec's :target is forwarded to ensure-image! opts"
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-agent true)
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage true)
+    (try
+      (let [captured-opts (atom nil)]
+        (with-redefs
+          [anvil.tools.dockerfile/ensure-image!
+           (fn [_ws _filename opts]
+             (reset! captured-opts opts)
+             {:tag "anvil-dockerfile:cafebabefeedface"
+              :exit 0 :cached? false :duration-ms 1234 :target (:target opts)})]
+          (let [d (ad/make {:execute? true})]
+            (chengis.engine.dispatcher/dispatch
+             d
+             {:type :jenkins/agent-stage-enter
+              :stage "Build"
+              :agent {:dockerfile {:filename "Dockerfile"
+                                   :target "prod"
+                                   :dir "docker-build"}}}
+             {:workspace "/tmp/anvil-multistage-ws"})
+            (is (= "prod" (:target @captured-opts))
+                "ensure-image! must receive the --target from the IR")
+            (is (= "docker-build" (:dir @captured-opts))
+                "ensure-image! must receive :dir for the build context")
+            (is (true? (:execute? @captured-opts))))))
+      (finally
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage false)))))
+
+(deftest dockerfile-multistage-flag-off-drops-target
+  (testing "with :dockerfile-multistage OFF, the dispatcher does NOT forward
+            :target — preserves the v0.4 AN6-3 single-stage path"
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-agent true)
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage false)
+    (try
+      (let [captured-opts (atom nil)]
+        (with-redefs
+          [anvil.tools.dockerfile/ensure-image!
+           (fn [_ws _filename opts]
+             (reset! captured-opts opts)
+             {:tag "anvil-dockerfile:cafebabefeedface" :exit 0 :cached? true})]
+          (let [d (ad/make {:execute? true})]
+            (chengis.engine.dispatcher/dispatch
+             d
+             {:type :jenkins/agent-stage-enter
+              :stage "Build"
+              :agent {:dockerfile {:filename "Dockerfile" :target "prod"}}}
+             {:workspace "/tmp/anvil-multistage-off-ws"})
+            (is (nil? (:target @captured-opts))
+                "multistage flag OFF → no --target forwarding"))))
+      (finally
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)))))
+
+(deftest dockerfile-built-event-published
+  (testing "an honored dockerfile build emits :dockerfile-built on the per-build topic,
+            with :cache-hit? reflecting the ensure-image! :cached? bool"
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-agent true)
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage true)
+    (try
+      (let [bus       (requiring-resolve 'anvil.events.bus/subscribe!)
+            unsub-all (requiring-resolve 'anvil.events.bus/unsubscribe-all!)
+            topic-fn  (requiring-resolve 'anvil.events.topics/topic-build)
+            received  (atom [])]
+        (unsub-all)
+        (bus (topic-fn "ci-build" 42) (fn [e] (swap! received conj e)))
+        (with-redefs
+          [anvil.tools.dockerfile/ensure-image!
+           (fn [_ws _filename opts]
+             {:tag (str "anvil-dockerfile:abc-" (or (:target opts) "<none>"))
+              :exit 0 :cached? false :duration-ms 250
+              :target (:target opts)})]
+          (let [d (ad/make {:execute? true})]
+            (chengis.engine.dispatcher/dispatch
+             d
+             {:type :jenkins/agent-stage-enter
+              :stage "Build"
+              :agent {:dockerfile {:filename "Dockerfile" :target "prod"}}}
+             {:workspace "/tmp/anvil-multistage-evt-ws"
+              :job-name "ci-build"
+              :build-number 42})))
+        (let [df-events (filter #(= :dockerfile-built (:type %)) @received)]
+          (is (= 1 (count df-events))
+              "exactly one :dockerfile-built event on the per-build topic")
+          (let [e (first df-events)]
+            (is (= "ci-build" (:job-name e)))
+            (is (= 42 (:build-number e)))
+            (is (= "Dockerfile" (:dockerfile-path e)))
+            (is (= "prod" (:target e)))
+            (is (= "anvil-dockerfile:abc-prod" (:image-tag e)))
+            (is (false? (:cache-hit? e))
+                ":cached? false → :cache-hit? false")
+            (is (integer? (:duration-ms e)))))
+        (unsub-all))
+      (finally
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage false)))))
+
+(deftest dockerfile-built-event-cache-hit-flag
+  (testing "ensure-image! cached? true → emitted event carries :cache-hit? true"
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-agent true)
+    ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage true)
+    (try
+      (let [bus       (requiring-resolve 'anvil.events.bus/subscribe!)
+            unsub-all (requiring-resolve 'anvil.events.bus/unsubscribe-all!)
+            topic-fn  (requiring-resolve 'anvil.events.topics/topic-build)
+            received  (atom [])]
+        (unsub-all)
+        (bus (topic-fn "ci-build" 7) (fn [e] (swap! received conj e)))
+        (with-redefs
+          [anvil.tools.dockerfile/ensure-image!
+           (fn [_ws _filename _opts]
+             {:tag "anvil-dockerfile:cached-hit" :exit 0 :cached? true
+              :duration-ms 1})]
+          (let [d (ad/make {:execute? true})]
+            (chengis.engine.dispatcher/dispatch
+             d
+             {:type :jenkins/agent-stage-enter
+              :stage "Build"
+              :agent {:dockerfile {:filename "Dockerfile" :target "builder"}}}
+             {:workspace "/tmp/anvil-multistage-hit-ws"
+              :job-name "ci-build"
+              :build-number 7})))
+        (let [e (first (filter #(= :dockerfile-built (:type %)) @received))]
+          (is (some? e))
+          (is (true? (:cache-hit? e)))
+          (is (= "builder" (:target e))))
+        (unsub-all))
+      (finally
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-agent false)
+        ((requiring-resolve 'anvil.features/set!) :dockerfile-multistage false)))))
