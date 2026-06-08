@@ -177,13 +177,23 @@
     ;; When on, credentials resolved via withCredentials hit Vault
     ;; before the local-disk fallback. Operator configures via
     ;; :anvil.vault/url + :anvil.vault/token-path in anvil.edn.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). The flag default-on is safe because the install! path
+    ;; refuses to take over without operator config (:anvil.vault/url
+    ;; + :token-path) — when those are absent, the local-disk backend
+    ;; remains active and behavior is bit-identical to v0.5.x.
     :vault-backend
 
     ;; :cloud-kms-backend — T2. anvil.secrets.kms adapter (AV6-3).
     ;; SecretBackend protocol impl backed by Cloud KMS (AWS-first;
     ;; GCP + Azure stubs in v0.6.x). Encrypted blob lives in
-    ;; anvil.edn / Git; KMS decrypts at resolve time. Closed-by-
-    ;; default; operator opts in per-deployment.
+    ;; anvil.edn / Git; KMS decrypts at resolve time.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). Same safety as :vault-backend — without operator config
+    ;; (:anvil.kms/provider + region + blobs) the install! path no-ops
+    ;; with a WARN; the local-disk backend stays active.
     :cloud-kms-backend
 
     ;; :dockerfile-multistage — T3. Multi-stage Dockerfile support
@@ -227,8 +237,17 @@
    Currently graduated:
      :dockerfile-multistage — v0.6 T3. Single-stage builds (no
        `:target` in the IR) hash identically to v0.4 AN6-3, so
-       flipping default-on never changes a single-stage image tag."
-  #{:dockerfile-multistage})
+       flipping default-on never changes a single-stage image tag.
+     :vault-backend     — v0.6 T2. install! refuses to take over
+                          without operator config; without
+                          :anvil.vault/url + :token-path in
+                          anvil.edn, the local-disk backend stays
+                          active and behavior is bit-identical to
+                          v0.5.x.
+     :cloud-kms-backend — v0.6 T2. Same posture as :vault-backend
+                          — install! no-ops without :anvil.kms
+                          config; local-disk stays active."
+  #{:dockerfile-multistage :vault-backend :cloud-kms-backend})
 
 (def ^:private flag-ns "anvil.features")
 
@@ -245,8 +264,9 @@
    values into the in-process registry. Idempotent — re-calling
    re-reads the file. Returns the resulting flag map for logging.
 
-   Unknown flags in the file are ignored (forward-compat). Missing
-   flags are recorded as `false`."
+   Unknown flags in the file are ignored (forward-compat). For flags
+   missing from anvil.edn, the per-flag default applies:
+   `default-on-features` membership → true; otherwise → false."
   []
   (let [edn (config/load-edn "anvil" {})
         flags (into {}

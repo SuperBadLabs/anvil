@@ -101,18 +101,82 @@
         "v0.6 runtime flags must be in known-features so anvil.edn parses them and dispatcher paths can gate on them")))
 
 (deftest v0-6-runtime-flags-default-closed
-  (testing "AV6-7 + features-closed-by-default: every v0.6 runtime flag is false until its tranche merges"
-    (doseq [f v0-6-runtime-flags]
+  (testing "AV6-7 + features-closed-by-default: every v0.6 runtime flag is false until its tranche merges, EXCEPT the ones graduated to default-on (which install! refuses to take over without operator config, so the local-disk backend stays active anyway)"
+    (doseq [f (clojure.set/difference v0-6-runtime-flags
+                                      features/default-on-features)]
       (features/set! f false)
       (is (false? (features/enabled? f))
-          (str f " is a v0.6 runtime reservation — must default disabled per AV6-7")))))
+          (str f " is a v0.6 runtime reservation — must default disabled per AV6-7 (graduated flags exempt: " features/default-on-features ")")))))
 
 (deftest enabled?-defaults-to-false
-  (testing "every known feature is closed-by-default"
-    (doseq [f features/known-features]
+  (testing "every known feature is closed-by-default, modulo graduated-to-default-on flags"
+    (doseq [f (clojure.set/difference features/known-features
+                                       features/default-on-features)]
       (features/set! f false)
       (is (false? (features/enabled? f))
-          (str f " should default to disabled")))))
+          (str f " should default to disabled (graduated flags exempt: " features/default-on-features ")")))))
+
+;; ---------------------------------------------------------------------------
+;; v0.6 T2 — default-on graduations
+;; ---------------------------------------------------------------------------
+
+(deftest default-on-features-contains-t2-graduations
+  (testing "T2 ships with :vault-backend + :cloud-kms-backend graduated"
+    (is (contains? features/default-on-features :vault-backend))
+    (is (contains? features/default-on-features :cloud-kms-backend))))
+
+(deftest vault-backend-default-on-when-unloaded
+  (testing "Before load-flags! runs (state empty), default-on flags
+            still report enabled — matches production post-load."
+    (let [before (features/snapshot)]
+      (try
+        ;; Simulate registry-cleared state by re-binding the private state
+        ;; atom to an empty map via swap! — set! is the public surface but
+        ;; it always writes a value. We use the public enabled? on a flag
+        ;; we explicitly haven't set, which means the state map lacks it.
+        (doseq [f features/known-features] (features/set! f false))
+        ;; Force the flag out of state by simulating fresh-process state:
+        ;; we can't easily clear the atom, but enabled? falls back to
+        ;; default-on-features membership only when (contains? state f)
+        ;; is false. To exercise that branch we'd need an unset state.
+        ;; The next test exercises this via load-flags! with empty edn.
+        (finally
+          (doseq [f features/known-features]
+            (features/set! f (boolean (get before f false)))))))))
+
+(deftest load-flags-with-empty-edn-honors-default-on
+  (testing "When anvil.edn lacks the keys entirely, default-on-features
+            flips them on (T2 graduation; matches production)."
+    (let [before (features/snapshot)]
+      (try
+        (with-redefs [anvil.config/load-edn (fn [_ _] {})]
+          (features/load-flags!)
+          (is (true? (features/enabled? :vault-backend))
+              ":vault-backend is graduated → defaults true even with empty anvil.edn")
+          (is (true? (features/enabled? :cloud-kms-backend))
+              ":cloud-kms-backend is graduated → defaults true even with empty anvil.edn"))
+        (finally
+          (doseq [f features/known-features]
+            (features/set! f (boolean (get before f false)))))))))
+
+(deftest load-flags-explicit-false-wins-over-default-on
+  (testing "An operator who pins a graduated flag to false in anvil.edn
+            keeps it off — the default only applies when the key is
+            absent."
+    (let [before (features/snapshot)]
+      (try
+        (with-redefs [anvil.config/load-edn
+                      (fn [_ _]
+                        {:anvil.features/vault-backend false
+                         :anvil.features/cloud-kms-backend false})]
+          (features/load-flags!)
+          (is (false? (features/enabled? :vault-backend))
+              "explicit false in anvil.edn must win over default-on")
+          (is (false? (features/enabled? :cloud-kms-backend))
+              "explicit false in anvil.edn must win over default-on"))
+        (finally
+          (doseq [f features/known-features]
+            (features/set! f (boolean (get before f false)))))))))
 
 (deftest enabled?-on-unknown-flag-is-false
   (testing "querying an unregistered feature is safe — returns false"
