@@ -7,6 +7,7 @@
    its own coverage and we want these tests to stay hermetic."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.set]
+            [anvil.config]
             [anvil.features :as features]))
 
 (use-fixtures :each
@@ -42,7 +43,13 @@
 (def v0-6-runtime-flags
   "v0.6 board T0.1 reservations: K8s agent runtime + Vault + Cloud-KMS
    secret backends + multi-stage Dockerfile + SCM-checkout-lifecycle.
-   Closed-by-default until each tranche merges per AV6-7."
+   Closed-by-default until each tranche merges per AV6-7.
+
+   T3 (multi-stage Dockerfile, :dockerfile-multistage) shipped at
+   v0.6.0 and was graduated to **default-on** — its v0.4-shape behavior
+   is bit-identical for builds that don't set :target. See
+   `default-on-features-graduate-to-true-by-default` below for the
+   lockdown of that semantic."
   #{:k8s-agent :vault-backend :cloud-kms-backend
     :dockerfile-multistage :scm-checkout-lifecycle})
 
@@ -123,6 +130,51 @@
   (let [snap (features/snapshot)]
     (is (true? (get snap :junit)))
     (is (false? (get snap :matrix)))))
+
+;; ---------------------------------------------------------------------------
+;; default-on features (v0.6 T3 graduation)
+;; ---------------------------------------------------------------------------
+
+(deftest default-on-features-set-contains-dockerfile-multistage
+  (testing "v0.6 T3 graduated :dockerfile-multistage to default-on"
+    (is (contains? features/default-on-features :dockerfile-multistage)
+        ":dockerfile-multistage is in default-on-features after T3 ships")))
+
+(deftest default-on-features-after-load-flags-empty-edn
+  (testing "load-flags! against an empty anvil.edn → default-on flags
+            land as true (single-stage builds are bit-identical, so
+            this is safe)"
+    (let [snap (features/snapshot)]
+      (try
+        ;; Force load-flags! to see an empty config: stub the load-edn
+        ;; path so it never touches disk.
+        (with-redefs [anvil.config/load-edn (fn [_ _] {})]
+          (features/load-flags!))
+        (doseq [f features/default-on-features]
+          (is (true? (features/enabled? f))
+              (str f " should be enabled after load-flags! with empty edn")))
+        (finally
+          (doseq [f features/known-features]
+            (features/set! f (boolean (get snap f false)))))))))
+
+(deftest default-on-feature-explicit-false-in-edn-wins
+  (testing "operators who set the flag false in anvil.edn keep that value"
+    (let [snap (features/snapshot)]
+      (try
+        (with-redefs [anvil.config/load-edn
+                      (fn [_ _] {:anvil.features/dockerfile-multistage false})]
+          (features/load-flags!))
+        (is (false? (features/enabled? :dockerfile-multistage))
+            "explicit false in anvil.edn beats the default-on default")
+        (finally
+          (doseq [f features/known-features]
+            (features/set! f (boolean (get snap f false)))))))))
+
+(deftest default-on-feature-can-be-explicitly-disabled
+  (testing "operators can still set :dockerfile-multistage false in anvil.edn"
+    (features/set! :dockerfile-multistage false)
+    (is (false? (features/enabled? :dockerfile-multistage))
+        "explicit false in state overrides the default-on")))
 
 ;; ---------------------------------------------------------------------------
 ;; wrap-feature middleware
