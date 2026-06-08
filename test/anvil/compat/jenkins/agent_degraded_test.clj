@@ -47,13 +47,42 @@
       (agent-stage-enter d {:dockerfile {:filename "Dockerfile"}})
       (is (= 1 (count (degraded-effects d)))))))
 
-(deftest kubernetes-always-unhonored
+(deftest kubernetes-unhonored-when-flag-off
+  ;; v0.6 T1: kubernetes is honored when :k8s-agent flag is on AND
+  ;; the parsed IR carries an :image. With the flag off, it degrades.
+  (anvil.features/set! :k8s-agent false)
+  (try
+    (let [d (ad/make {:execute? true})]
+      (agent-stage-enter d {:kubernetes {:image "busybox:1.36"
+                                         :raw-form :yaml}})
+      (let [degraded (degraded-effects d)]
+        (is (= 1 (count degraded)))
+        (is (= "kubernetes" (get-in (second (first degraded))
+                                    [:requested-agent :type])))))
+    (finally
+      (anvil.features/set! :k8s-agent true))))
+
+(deftest kubernetes-unhonored-when-no-image
+  ;; Even with the flag on, an empty `kubernetes { }` body (no
+  ;; image extractable from yaml or containerTemplate) degrades.
+  (anvil.features/set! :k8s-agent true)
   (let [d (ad/make {:execute? true})]
-    (agent-stage-enter d {:type :kubernetes :raw {:yaml "..."}})
+    (agent-stage-enter d {:kubernetes {:raw-form :unknown}})
     (let [degraded (degraded-effects d)]
       (is (= 1 (count degraded)))
       (is (= "kubernetes" (get-in (second (first degraded))
-                                   [:requested-agent :type]))))))
+                                  [:requested-agent :type]))))))
+
+(deftest kubernetes-honored-when-flag-on-and-image-extractable
+  ;; v0.6 T1.1: with the :k8s-agent flag on AND the IR carrying an image,
+  ;; the dispatcher honors the spec and emits NO :agent/degraded. The
+  ;; backend-wiring constructs a K8sBackend at execute-via-backend time.
+  (anvil.features/set! :k8s-agent true)
+  (let [d (ad/make {:execute? true})]
+    (agent-stage-enter d {:kubernetes {:image "busybox:1.36"
+                                       :raw-form :yaml}})
+    (is (empty? (degraded-effects d))
+        "k8s with :k8s-agent flag on + image must NOT emit :agent/degraded")))
 
 (deftest docker-unhonored-in-record-only-mode
   (testing "In record-only mode (:execute? false) docker agents are
@@ -101,13 +130,22 @@
         (is (= :unsupported (:result c)))
         (is (= :agent-unhonored (:rule c)))))))
 
-(deftest k8s-stage-classifies-as-unsupported-end-to-end
-  (let [d (ad/make {:execute? true})]
-    (agent-stage-enter d {:type :kubernetes})
-    (d/dispatch d {:type :jenkins/sh :script "make"} {})
-    (let [c (classify/classify-build {:status :ok}
-                                     @(:effects d) {})]
-      (is (= :unsupported (:result c))))))
+(deftest k8s-stage-classifies-as-unsupported-when-flag-off
+  ;; v0.6 T1: kubernetes still classifies as :unsupported when the
+  ;; :k8s-agent flag is off (or the IR doesn't carry an image). The
+  ;; honesty contract is preserved — the build doesn't fake-green
+  ;; just because we parsed the agent block.
+  (anvil.features/set! :k8s-agent false)
+  (try
+    (let [d (ad/make {:execute? true})]
+      (agent-stage-enter d {:kubernetes {:image "busybox:1.36"
+                                         :raw-form :yaml}})
+      (d/dispatch d {:type :jenkins/sh :script "make"} {})
+      (let [c (classify/classify-build {:status :ok}
+                                       @(:effects d) {})]
+        (is (= :unsupported (:result c)))))
+    (finally
+      (anvil.features/set! :k8s-agent true))))
 
 (deftest record-only-docker-stage-classifies-as-unsupported-even-with-recorded-sh
   ;; Record-only mode: docker is unhonored, so the recorded :sh effect

@@ -20,14 +20,21 @@
     (is (= "label:linux"       (agent/agent-summary {:label "linux"})))
     (is (= "docker:node:18"    (agent/agent-summary {:docker {:image "node:18"}})))
     (is (= "node-label:big"    (agent/agent-summary {:type :node-label :label "big"})))
-    (is (= "kubernetes (UNSUPPORTED)" (agent/agent-summary {:type :kubernetes :raw "..."})))
+    ;; v0.6 T1: k8s is no longer "(UNSUPPORTED)" — the summary names
+    ;; the image (or :raw-form when image isn't extractable).
+    (is (= "kubernetes:busybox:1.36"
+           (agent/agent-summary {:kubernetes {:image "busybox:1.36"
+                                              :raw-form :yaml}})))
+    (is (= "kubernetes:yaml"
+           (agent/agent-summary {:kubernetes {:raw-form :yaml}})))
     (is (= "<missing>"         (agent/agent-summary nil)))))
 
-(deftest kubernetes-is-rejected-test
-  (testing "kubernetes agent specs are rejected with a clear migration message"
-    (is (true? (agent/rejected? {:type :kubernetes :raw "..."})))
-    (is (clojure.string/includes? (agent/rejection-reason {:type :kubernetes})
-                                  "Kubernetes agent"))))
+(deftest kubernetes-no-longer-rejected-test
+  (testing "v0.6 T1 retires the blanket kubernetes-rejection — the
+            importer accepts the IR; runtime degrades honestly when
+            the :k8s-agent flag is off."
+    (is (false? (agent/rejected? {:kubernetes {:image "busybox:1.36"}})))
+    (is (nil? (agent/rejection-reason {:kubernetes {:image "busybox:1.36"}})))))
 
 (deftest wrap-pipeline-with-agent-events-test
   (testing "wrap-pipeline-with-agent-events brackets each stage's steps with
@@ -85,10 +92,14 @@
           (is (= "Bigjob" (-> big-enter second :stage)))
           (is (= "docker:big-image:1" (-> big-enter second :summary))))))))
 
-(deftest k8s-stage-records-rejection-test
-  (testing "a stage with agent { kubernetes ... } records :rejected? in its enter event"
+(deftest k8s-stage-no-longer-rejected-test
+  (testing "v0.6 T1: a stage with agent { kubernetes ... } no longer
+            records :rejected? in its enter event — the IR is preserved
+            and the runtime honors-or-degrades based on the :k8s-agent
+            feature flag."
     (let [pipeline {:stages [{:name "K8sStage"
-                              :agent {:type :kubernetes :raw "..."}
+                              :agent {:kubernetes {:image "busybox:1.36"
+                                                   :raw-form :yaml}}
                               :steps [{:type :jenkins/sh :script "uname"}]}]}
           wrapped (agent/wrap-pipeline-with-agent-events pipeline)
           flat {:stages (mapv #(select-keys % [:name :steps]) (:stages wrapped))}
@@ -96,5 +107,5 @@
           _ (d/run-pipeline flat dispatcher {})
           evs @(:effects dispatcher)
           enter (first (filter #(= :agent/stage-enter (first %)) evs))]
-      (is (true? (-> enter second :rejected?)))
-      (is (clojure.string/includes? (-> enter second :reason) "Kubernetes")))))
+      (is (not (-> enter second :rejected?))
+          "k8s import no longer records :rejected? — runtime decides honestly"))))

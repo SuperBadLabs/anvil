@@ -32,9 +32,9 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core v0.3.0
+      - name: Install chengis-core v0.4.0
         run: |
-          git clone --depth 1 --branch v0.3.0 \
+          git clone --depth 1 --branch v0.4.0 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 

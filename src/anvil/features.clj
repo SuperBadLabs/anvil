@@ -206,6 +206,25 @@
     ;; through T5 ship; flipped to true once AN8-4 receipt lands.
     :scm-checkout-lifecycle})
 
+(def default-on-features
+  "Features that default to `true` once their tranche has shipped (per
+   AV6-7 — flags gate routes only during in-progress; defaults flip
+   to on with the tranche-closing commit). Operators can still
+   explicitly set the flag to `false` in anvil.edn to opt out.
+
+   Adding a feature here is the closing-commit pattern for a tranche;
+   removing it (when the feature graduates fully) is the safe path
+   to also remove the flag from `known-features` in a later release."
+  #{
+    ;; v0.6 T1 — Kubernetes agent runtime. Defaults on with the
+    ;; tranche-closing commit per AV6-7. Operators on hosts without
+    ;; a reachable k8s cluster set
+    ;;   {:anvil.features/k8s-agent false}
+    ;; in anvil.edn to opt out; the dispatcher then degrades
+    ;; `agent { kubernetes { … } }` to :unsupported honestly instead
+    ;; of trying (and failing) to reach the cluster.
+    :k8s-agent})
+
 (def ^:private flag-ns "anvil.features")
 
 (defn- flag-keyword
@@ -216,18 +235,27 @@
 
 (defonce ^:private state (atom {}))
 
+(defn- default-value
+  "Default state for a feature when anvil.edn doesn't mention it.
+   Features in `default-on-features` default to `true`; everything
+   else defaults to `false` (the conservative pre-tranche state)."
+  [feature]
+  (contains? default-on-features feature))
+
 (defn load-flags!
   "Read `anvil.edn` via `anvil.config/load-edn` and snapshot the flag
    values into the in-process registry. Idempotent — re-calling
    re-reads the file. Returns the resulting flag map for logging.
 
    Unknown flags in the file are ignored (forward-compat). Missing
-   flags are recorded as `false`."
+   flags fall back to per-feature defaults — see `default-on-features`
+   for the set of features that default to `true` once their tranche
+   has shipped (AV6-7)."
   []
   (let [edn (config/load-edn "anvil" {})
         flags (into {}
                     (for [f known-features]
-                      [f (boolean (get edn (flag-keyword f) false))]))
+                      [f (boolean (get edn (flag-keyword f) (default-value f)))]))
         on (filter #(get flags %) known-features)]
     (reset! state flags)
     (log/info (str "anvil.features: "

@@ -17,16 +17,22 @@
      {:type :node-label :label STRING}  — agent { node { label '...' } }
      {:docker {:image STRING :args STRING?}}
      {:dockerfile {:filename STRING :dir STRING?}}
-     {:type :kubernetes :raw ...}       — out of scope; rejection below
+     {:kubernetes {:image STRING? :yaml STRING? :raw-form KW
+                   :resource-limits {…}? :namespace STRING?}}
 
    Resolution policy:
      - Stage-level :agent overrides pipeline-level :agent for that stage.
      - agent none at the pipeline level requires every stage to declare
        its own agent; we emit a :agent/missing warning otherwise (the
        runtime still runs but records the gap).
-     - kubernetes agents are rejected with an actionable message — TX5
-       phase 2 work."
-  (:require [clojure.string :as str]))
+     - kubernetes agents route through chengis-core 0.4's K8sBackend
+       when `:anvil.features/k8s-agent` is enabled (anvil v0.6 T1, AV6-2).
+       When the flag is off, or the parsed :kubernetes IR doesn't carry
+       enough info to construct a pod (no image), the agent degrades
+       honestly to :unsupported with a clear reason — the dispatcher's
+       `:agent/degraded` effect surfaces the miss instead of pretending."
+  (:require [anvil.features :as features]
+            [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
 ;; Spec analysis
@@ -39,6 +45,8 @@
      - else nil (Jenkins parse-error in real Jenkins; we record :missing)."
   [pipeline-agent stage-agent]
   (or stage-agent pipeline-agent))
+
+(defn- k8s-spec? [spec] (and (map? spec) (some? (:kubernetes spec))))
 
 (defn agent-summary
   "Compact human-readable label for an agent spec. Used in side-effects
@@ -53,7 +61,10 @@
     (= :any  (:type spec))       "any"
     (= :none (:type spec))       "none"
     (= :node-label (:type spec)) (str "node-label:" (:label spec))
-    (= :kubernetes (:type spec)) "kubernetes (UNSUPPORTED)"
+    (k8s-spec? spec)             (str "kubernetes:"
+                                      (or (-> spec :kubernetes :image)
+                                          (some-> spec :kubernetes :raw-form name)
+                                          "<dynamic>"))
     (:label spec)                (str "label:" (:label spec))
     (:docker spec)               (str "docker:" (-> spec :docker :image))
     (:dockerfile spec)           (str "dockerfile:" (-> spec :dockerfile :filename))
@@ -62,32 +73,33 @@
 (defn deferred?
   "True iff the spec is one we know about but defer real execution for —
    the dispatcher should still log it but the migration UX should flag
-   that this stage won't ACTUALLY run on the requested agent in v1."
+   that this stage won't ACTUALLY run on the requested agent.
+
+   v0.6 T1: kubernetes is no longer deferred when the :k8s-agent feature
+   flag is on AND the parsed IR carries an image we can launch. When
+   the flag is off (or the spec is otherwise incomplete), k8s stays
+   deferred so the dispatcher's :agent/degraded effect fires and the
+   build records the miss honestly."
   [spec]
   (boolean
-   (or (= :kubernetes (:type spec))
-       (and (= :none (:type spec))))))
+   (or (= :none (:type spec))
+       (and (k8s-spec? spec)
+            (or (not (features/enabled? :k8s-agent))
+                (str/blank? (or (-> spec :kubernetes :image) "")))))))
 
 (defn rejected?
-  "True iff the spec is one we refuse to import. Currently:
-     - :kubernetes (until anvil plumbs into a k8s provisioner — TX9)
-   The importer surfaces a clear migration message; the dispatcher
-   records the rejection rather than executing."
-  [spec]
-  (= :kubernetes (:type spec)))
+  "True iff the spec is one we refuse to import. v0.6 T1 retires the
+   blanket kubernetes-rejection — the importer now accepts k8s agent
+   blocks; the dispatcher records :unsupported at runtime when the
+   :k8s-agent flag is off, but the IR is preserved."
+  [_spec]
+  false)
 
 (defn rejection-reason
-  "Human-readable rejection text for the importer / migration UX."
-  [spec]
-  (cond
-    (= :kubernetes (:type spec))
-    "Kubernetes agent declarations are not yet supported. anvil's
-     Kubernetes provisioner (chengis-core has the substrate) wires up
-     in TX9; until then, replace this stage's agent block with a
-     `label` referring to a worker that has the required tools."
-
-    :else
-    nil))
+  "Human-readable rejection text for the importer / migration UX.
+   No agent shape is currently rejected at import time."
+  [_spec]
+  nil)
 
 ;; ---------------------------------------------------------------------------
 ;; Effects emitted by the dispatcher when a stage begins

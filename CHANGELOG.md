@@ -1,6 +1,64 @@
 # anvil — changelog
 
-## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity (planned)
+## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity (in progress)
+
+### Added — v0.6 T1 (Kubernetes agent runtime)
+
+- **chengis-core 0.4.0 dependency bump** — pulls in the new
+  `chengis.engine.backend.k8s/K8sBackend` (per
+  [AV6-2](docs/roadmap/v0.6-board.md#locked-decisions-av6-series): k8s
+  backend lives in chengis-core, anvil only consumes the protocol).
+- **Translator: `agent { kubernetes { yaml '...' } }`** (T1.3) — the
+  declarative form. Regex-extracts image / namespace / resource
+  limits (`memory`, `cpu`) from the inline yaml without taking a
+  clj-yaml dep into the translator path. Falls through to a
+  honest-degrade marker (`:k8s-empty-block`) when extraction misses.
+- **Translator: `agent { kubernetes { containerTemplate(...) } }`**
+  (T1.4) — the structured Jenkins form. Maps `image`, `name`,
+  `resourceLimitMemory`, `resourceLimitCpu` into the same IR shape
+  declarative emits.
+- **Kubeconfig lookup** (T1.5) — chengis-core's K8sBackend resolves
+  in order: `:anvil.k8s/kubeconfig-path` (anvil.edn override) →
+  `KUBECONFIG` env → `~/.kube/config`. Threaded into every kubectl
+  invocation via `KUBECONFIG=` env so the backend doesn't mutate
+  the calling process's env.
+- **backend-wiring.k8s-agent-spec / backend-for-ctx** — recognizes
+  the `:kubernetes` key in `(:active-agent ctx)`, constructs a
+  K8sBackend with operator-overridable kubeconfig + the AN7-5b
+  per-job resource-limit override (re-uses the existing
+  `:docker-resource-limits` key — backend-agnostic).
+- **`:k8s-agent` feature flag defaults ON** (per AV6-7 —
+  closed-by-default through in-progress; flips on with the
+  tranche-closing commit). Operators on hosts without a reachable
+  cluster set `{:anvil.features/k8s-agent false}` to opt out;
+  k8s shapes then degrade to `:unsupported` honestly.
+- **T1.6 receipt**: `docs/k8s/anvil-k8s-runbook.md` — kind setup,
+  config knobs, declarative + scripted walkthroughs, resource-limit
+  mapping, debugging, and when-to-use-k8s-vs-docker. Replaces the
+  T0.3 stub.
+
+### Changed
+
+- `anvil.compat.jenkins.agent` — `:kubernetes`-keyed specs are no
+  longer rejected at import. The new `agent-summary` names the
+  image; `rejected?` returns `false`; `deferred?` flips per
+  feature flag + IR completeness.
+- `anvil.compat.jenkins.dispatcher.unhonored-container-agent-shape`
+  — k8s is honored when `:k8s-agent` flag is on AND an image is
+  extractable. Otherwise emits `:agent/degraded` (AN4-1 classifier
+  reads as `:unsupported`).
+
+### Tests
+
+- 7 new tests (24 assertions) in
+  `test/anvil/compat/jenkins/k8s_agent_test.clj`.
+- Updated `agent_test.clj` + `agent_degraded_test.clj` for the
+  new IR shape.
+- Full anvil suite: 952 tests / 2779 assertions, 0 failures, 0 errors.
+
+---
+
+## 0.6.0 (other threads — in progress)
 
 Per the [v0.6 execution board](docs/roadmap/v0.6-board.md), in
 progress. Two threads:
