@@ -192,18 +192,27 @@
    without invoking the daemon.
 
    The arg shape mirrors chengis-core's `run-disposable-container` — same
-   `-v workspace:workspace`, `-w workspace`, env flags. Plus the
-   file-mount `-v host:container:ro` flags chengis-core can't emit."
-  [{:keys [image extra-args]} workspace cmd env file-mounts]
-  (vec
-   (concat ["docker" "run" "--rm" "-i"
-            "-v" (str workspace ":" workspace)
-            "-w" (str workspace)]
-           (when (and extra-args (not (str/blank? extra-args)))
-             (str/split extra-args #"\s+"))
-           (file-mount-flags file-mounts)
-           (env-flags env)
-           [image "sh" "-c" cmd])))
+   `-v workspace:workspace`, env flags. Plus the file-mount
+   `-v host:container:ro` flags chengis-core can't emit.
+
+   `workdir` (4-arity overload — defaults to `workspace`) sets the
+   container's `-w` value. Splitting it from `workspace` (the bind-mount
+   root) is what makes `dir('subdir') { sh '...' }` work inside docker
+   steps with file credentials — the bind mount stays at the workspace
+   root so absolute paths still resolve, while the step executes in the
+   subdir (Copilot review on #94)."
+  ([docker-spec workspace cmd env file-mounts]
+   (build-inline-docker-argv docker-spec workspace workspace cmd env file-mounts))
+  ([{:keys [image extra-args]} workspace workdir cmd env file-mounts]
+   (vec
+    (concat ["docker" "run" "--rm" "-i"
+             "-v" (str workspace ":" workspace)
+             "-w" (str (or workdir workspace))]
+            (when (and extra-args (not (str/blank? extra-args)))
+              (str/split extra-args #"\s+"))
+            (file-mount-flags file-mounts)
+            (env-flags env)
+            [image "sh" "-c" cmd]))))
 
 (defn- execute-inline-docker
   "Direct `docker run --rm` invocation for the file-credential case
@@ -211,9 +220,15 @@
    same way the non-docker subprocess path in `shell-execute` does."
   [cmd ctx]
   (let [docker-spec (docker-agent-spec (:active-agent ctx))
+        ;; `:workspace` is the bind-mount root; `:cwd` is the step's
+        ;; working directory (set by `dir('subdir')`). When :workspace
+        ;; isn't set, fall back to :cwd as both — matches the chengis-core
+        ;; backend's behavior where bs/workspace-path doubles as workdir.
         workspace (or (:workspace ctx) (:cwd ctx) "/workspace")
+        workdir   (or (:cwd ctx) workspace)
         argv (build-inline-docker-argv docker-spec
                                        workspace
+                                       workdir
                                        cmd
                                        (:env ctx {})
                                        (:file-mounts ctx))

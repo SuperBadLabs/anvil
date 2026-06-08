@@ -366,3 +366,29 @@
                          (mapv second))]
         (is (some #(= "GPG_KEY_FILE=/anvil-creds/jkube-gpg-key" %) e-pairs)
             "env binding makes it through as -e flag")))))
+
+(deftest backend-wiring-inline-docker-honors-cwd-workdir
+  (testing "build-inline-docker-argv -w honors workdir distinct from workspace (Jenkins dir())"
+    (let [argv (backend-wiring/build-inline-docker-argv
+                {:image "alpine:3" :extra-args nil}
+                "/workspace"        ; bind-mount root
+                "/workspace/subdir" ; workdir — set by dir('subdir')
+                "pwd"
+                {}
+                [])
+          w-flag-idx (.indexOf ^java.util.List argv "-w")
+          v-pairs (->> (partition 2 1 argv)
+                       (filter #(= "-v" (first %)))
+                       (mapv second))]
+      (is (pos? w-flag-idx) "-w flag is present")
+      (is (= "/workspace/subdir" (nth argv (inc w-flag-idx)))
+          "-w value is the workdir, not the workspace root")
+      (is (some #(= "/workspace:/workspace" %) v-pairs)
+          "bind mount still anchored at workspace root, not workdir")))
+  (testing "4-arity (no workdir) defaults -w to workspace for back-compat"
+    (let [argv (backend-wiring/build-inline-docker-argv
+                {:image "alpine:3" :extra-args nil}
+                "/workspace" "pwd" {} [])
+          w-flag-idx (.indexOf ^java.util.List argv "-w")]
+      (is (= "/workspace" (nth argv (inc w-flag-idx)))
+          "without workdir, -w falls back to workspace"))))
