@@ -32,7 +32,7 @@
   ;; pinned git tag (per RS2 of the extraction board — Clojars deferred
   ;; until external demand justifies it). CI workflows do the same dance
   ;; as a prelude step before lein test / lein run.
-  :dependencies [[superbadlabs/chengis-core "0.4.1"]
+  :dependencies [[superbadlabs/chengis-core "0.4.2"]
 
                  [org.clojure/clojure "1.12.4"]
                  [org.clojure/core.async "1.8.741"]
