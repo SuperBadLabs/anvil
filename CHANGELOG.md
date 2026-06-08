@@ -1,103 +1,201 @@
 # anvil — changelog
 
-## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity (in progress)
+## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity Release (2026-06-08)
 
-### Added — v0.6 T1 (Kubernetes agent runtime)
+The release the [v0.6 execution board](docs/roadmap/v0.6-board.md)
+promised: four runtime-expansion tranches (T1-T4) and four AN8
+Jenkinsfile-fidelity tickets, all on master. Closes the v0.4-deferred
+Vault + Cloud-KMS operator ask and the v0.3-deferred Kubernetes agent
+runtime. The AN8 series puts the AN7-5c receipt's "real bottlenecks
+aren't memory" findings to rest by shipping `tools{}` /
+`parameters{choice}` / matrix-with-tools / SCM-checkout-before-stage-1.
 
-- **chengis-core 0.4.0 dependency bump** — pulls in the new
-  `chengis.engine.backend.k8s/K8sBackend` (per
-  [AV6-2](docs/roadmap/v0.6-board.md#locked-decisions-av6-series): k8s
-  backend lives in chengis-core, anvil only consumes the protocol).
-- **Translator: `agent { kubernetes { yaml '...' } }`** (T1.3) — the
-  declarative form. Regex-extracts image / namespace / resource
-  limits (`memory`, `cpu`) from the inline yaml without taking a
-  clj-yaml dep into the translator path. Falls through to a
-  honest-degrade marker (`:k8s-empty-block`) when extraction misses.
-- **Translator: `agent { kubernetes { containerTemplate(...) } }`**
-  (T1.4) — the structured Jenkins form. Maps `image`, `name`,
-  `resourceLimitMemory`, `resourceLimitCpu` into the same IR shape
-  declarative emits.
-- **Kubeconfig lookup** (T1.5) — chengis-core's K8sBackend resolves
-  in order: `:anvil.k8s/kubeconfig-path` (anvil.edn override) →
-  `KUBECONFIG` env → `~/.kube/config`. Threaded into every kubectl
-  invocation via `KUBECONFIG=` env so the backend doesn't mutate
-  the calling process's env.
-- **backend-wiring.k8s-agent-spec / backend-for-ctx** — recognizes
-  the `:kubernetes` key in `(:active-agent ctx)`, constructs a
-  K8sBackend with operator-overridable kubeconfig + the AN7-5b
-  per-job resource-limit override (re-uses the existing
-  `:docker-resource-limits` key — backend-agnostic).
-- **`:k8s-agent` feature flag defaults ON** (per AV6-7 —
-  closed-by-default through in-progress; flips on with the
-  tranche-closing commit). Operators on hosts without a reachable
-  cluster set `{:anvil.features/k8s-agent false}` to opt out;
-  k8s shapes then degrade to `:unsupported` honestly.
-- **T1.6 receipt**: `docs/k8s/anvil-k8s-runbook.md` — kind setup,
-  config knobs, declarative + scripted walkthroughs, resource-limit
-  mapping, debugging, and when-to-use-k8s-vs-docker. Replaces the
-  T0.3 stub.
+### Runtime tranches — SHIPPED
 
-### Changed
+- **T1 — Kubernetes agent runtime** (`:anvil.features/k8s-agent`,
+  default-on). chengis-core 0.4.1 ships
+  `chengis.engine.backend.k8s/K8sBackend` (pod-per-step lifecycle,
+  honors `:resource-limits` → pod resource requests/limits, `:env`,
+  `:user`, `:host-user?`). anvil's translator parses
+  `agent { kubernetes { yaml '...' } }` (regex-extracts image /
+  namespace / `memory` / `cpu` without a clj-yaml dep) AND the
+  structured `agent { kubernetes { containerTemplate(...) } }` form.
+  Kubeconfig lookup: `:anvil.k8s/kubeconfig-path` (anvil.edn override)
+  → `KUBECONFIG` env → `~/.kube/config`. Threaded via `KUBECONFIG=`
+  env per kubectl invocation so the backend doesn't mutate the
+  calling process's env. `:pod-scheduled` / `:pod-completed` SSE
+  events emit on the build topic. Operators on hosts without a
+  reachable cluster opt out via the flag. Unblocks
+  eclipse-epsilon, eclipse-mojarra, and `cassandra-large`-labelled
+  builds of cassandra-real-Jenkinsfile. Receipt:
+  `docs/k8s/anvil-k8s-runbook.md`.
 
-- `anvil.compat.jenkins.agent` — `:kubernetes`-keyed specs are no
-  longer rejected at import. The new `agent-summary` names the
-  image; `rejected?` returns `false`; `deferred?` flips per
-  feature flag + IR completeness.
-- `anvil.compat.jenkins.dispatcher.unhonored-container-agent-shape`
-  — k8s is honored when `:k8s-agent` flag is on AND an image is
-  extractable. Otherwise emits `:agent/degraded` (AN4-1 classifier
-  reads as `:unsupported`).
+- **T2 — SecretBackend protocol + Vault + Cloud-KMS adapters**
+  (`:vault-backend`, `:cloud-kms-backend`, both default-on; install
+  is no-op without operator config so single-tenant behavior is
+  bit-identical to v0.5.x). `anvil.secrets/SecretBackend` protocol
+  with `(resolve! [this id])` + `(list-ids [this])`.
+  `anvil.secrets.vault` — Hashicorp Vault KV v2 mode reads
+  `:anvil.vault/url` + `:anvil.vault/token-path`.
+  `anvil.secrets.kms` — AWS-KMS-first (GCP + Azure provider stubs
+  warn + return nil; ship in v0.6.x). Wired into `h-with-credentials`
+  so credentials resolve via the configured chain regardless of
+  type. `:secret-resolved` SSE event audits every successful resolve
+  WITHOUT carrying the secret value — only credential-id + backend +
+  latency-ms. Receipt: `docs/secrets/vault-kms-backends.md`.
 
-### Tests
-
-- 7 new tests (24 assertions) in
-  `test/anvil/compat/jenkins/k8s_agent_test.clj`.
-- Updated `agent_test.clj` + `agent_degraded_test.clj` for the
-  new IR shape.
-- Full anvil suite: 952 tests / 2779 assertions, 0 failures, 0 errors.
-
----
-
-## 0.6.0 (other threads — in progress)
-
-Per the [v0.6 execution board](docs/roadmap/v0.6-board.md), in
-progress. Two threads:
-
-1. **Runtime expansion** — Kubernetes agent runtime via chengis-core
-   0.4 (T1, biggest tranche, unblocks cassandra-real / eclipse-epsilon
-   / eclipse-mojarra); Vault + Cloud-KMS secret backend adapters
-   (T2, the v0.4-deferred operator ask); multi-stage Dockerfile
-   container-as-step (T3, the v0.5-deferred polish); build-overrides
-   hot-reload (T4, v0.5.x continuation).
-2. **Honesty thread (AN8 series)** — `tools{}`, `parameters{choice}`
-   defaults, matrix-declarative-with-tools composition, SCM-checkout-
-   before-stage-1 lifecycle. Targets ≥ 8/14 wild-corpus `:success`
-   per AV6-5 (aspirational 11-12).
-
-Reserved feature flags + SSE topics shipped by T0; all closed by
-default until each tranche merges.
-
-Tracks until v0.6.0 tag; see board for week cadence + locked
-decisions (AV6-1..9).
-
-### Shipped in v0.6 (incremental, on `master` ahead of the 0.6.0 cut)
-
-- **T3 — multi-stage Dockerfile container-as-step.** Behind
-  `:anvil.features/dockerfile-multistage` (graduated to default-on at
-  ship; first member of `default-on-features`). Translator lifts
+- **T3 — Multi-stage Dockerfile container-as-step**
+  (`:dockerfile-multistage`, default-on). Translator lifts
   `agent { dockerfile { args '--target X' } }` (and the
-  `additionalBuildArgs '...'` alias) into `:dockerfile {:target X
-  :args ... :dir ...}`. `anvil.tools.dockerfile/ensure-image!` folds
-  `:target` into the image-tag hash AND forwards it to
-  `docker build --target X`. `:dir` reroots the build context to
-  `<workspace>/<dir>`. Cache key is now `(Dockerfile-content +
-  COPY/ADD-sources-merkle + --target)`: same triple → cache hit,
-  no rebuild; differ → bust. Every honored build emits a
-  `:dockerfile-built` SSE event on `[:build <job> <n>]` carrying
-  `:cache-hit?`, `:image-tag`, `:target`, `:duration-ms`. Receipt:
-  `docs/container-step/multi-stage-dockerfile.md`. Closes T3.1-T3.3
-  + T3.5 of the v0.6 board; T3.4 (wild-corpus-shim wiring) is a
-  v0.6.x follow-up.
+  `additionalBuildArgs '...'` alias) into
+  `:dockerfile {:target X :args ... :dir ...}`.
+  `anvil.tools.dockerfile/ensure-image!` folds `:target` into the
+  image-tag hash AND forwards it to `docker build --target X`.
+  `:dir` reroots the build context to `<workspace>/<dir>`. Cache
+  key is now `(Dockerfile-content + COPY/ADD-sources-merkle +
+  --target)`: same triple → cache hit, no rebuild. Every honored
+  build emits a `:dockerfile-built` SSE event carrying `:cache-hit?`,
+  `:image-tag`, `:target`, `:duration-ms`. First member of the new
+  `default-on-features` graduation set in `anvil.features`. Receipt:
+  `docs/container-step/multi-stage-dockerfile.md`. (T3.4
+  wild-corpus-shim retirement-for-cassandra-real-Dockerfile is a
+  v0.6.x follow-up.)
+
+- **T4 — build-overrides hot-reload**. A daemon thread started at
+  boot via `java.nio.file.WatchService` watches the anvil.edn
+  parent directory for `ENTRY_MODIFY` / `ENTRY_CREATE` events; on
+  match, calls `clear-cache!`. The next `for-job` lookup triggers
+  a fresh load via the existing lazy-cache path. Operator edits
+  `:anvil.build-overrides` + saves → next build sees the new shape,
+  no restart. No-op + crash-safe when the daemon is using the
+  classpath-bundled default (no file to watch). Receipt updated at
+  `docs/jenkins-compat/an7-5-build-overrides.md` with the v0.5.x →
+  v0.6 migration note.
+
+### AN8 honesty series — SHIPPED
+
+The four tickets that the AN7-5c receipt put names on. All gated
+behind `:anvil.features/tools-directive` (AN8-1 + AN8-3),
+`:anvil.features/parameters-defaults` (AN8-2), and
+`:anvil.features/scm-checkout-lifecycle` (AN8-4) — closed-by-default
+through v0.6.0 ship per AV6-7. Operators flip per deployment.
+
+- **AN8-1 — `tools{}` directive**. Translator parses
+  `tools { maven 'X' jdk 'Y' }` at pipeline + stage levels into
+  `[{:type :maven :version "X"} ...]`. Nested `stages{}` propagate
+  parent `:tools` to children (apache-struts shape).
+  `anvil.tools.images` resolves a tools spec via priority-ordered
+  candidate keys (raw join → canonical sort → type-version
+  composite → per-tool → `*` wildcard) against operator-mapped
+  `:anvil.tools/images` in anvil.edn. Dispatcher's
+  `h-agent-stage-enter` upgrades `:active-agent` to the mapped
+  image when no explicit docker agent is declared. Emits
+  `:tools/resolved` on hit, `:tools/unmapped` (with candidate keys)
+  on miss. **Per the AV6 anti-goal: no anvil-managed JDK installer**
+  — operator maps tool-version to a pre-baked docker image. Receipt:
+  `docs/jenkins-compat/an8-1-tools-directive.md`.
+
+- **AN8-2 — `parameters{ choice }` defaults**. IR helper
+  `ir/default-parameters` extracts `{name → default-string}` per
+  Jenkins's declarative semantics (`defaultValue` if declared, else
+  first `choice`; boolean → `"true"/"false"`). New
+  `anvil.parameters-defaults` ns reads per-job operator defaults
+  from `:anvil.parameters/defaults <job-name>` in anvil.edn. Runner
+  pre-parses Jenkinsfile + seeds `ctx :parameters` via three-layer
+  merge `translator < operator < runtime-params` (runtime trigger
+  wins). Emits `:parameters/defaults-applied` for audit. Closes the
+  activemq `agent { label { label params.nodeLabel } }` → nil
+  failure mode from the AN7-5c receipt. Receipt:
+  `docs/jenkins-compat/an8-2-parameters-defaults.md`.
+
+- **AN8-3 — matrix-declarative-with-tools composition**. Builds on
+  AN8-1: matrix entries carry per-axis `:tools`; `expand-matrix`
+  propagates matrix-level tools onto each cell; translator composes
+  `pipeline.tools ⊕ parent-stage.tools ⊕ matrix.tools` (more-specific
+  wins on `:type` collision; un-overridden tools at every layer
+  survive). `anvil.tools.images/interpolate-tools` substitutes
+  `${VAR}` / `$VAR` against the active matrix cell's axis map at
+  dispatch time before the AN8-1 tool-mapping lookup. Closes the
+  zookeeper `tools { jdk "${JAVA_VERSION}" }` shape that the
+  AN7-5c receipt named. Receipt:
+  `docs/jenkins-compat/an8-3-matrix-with-tools.md`.
+
+- **AN8-4 — SCM-checkout-before-stage-1 lifecycle**. The universal
+  fidelity bug from the AN7-5c receipt (`git clean -fxd` exit 128
+  in 863 ms against an empty workspace). New
+  `anvil.compat.jenkins.scm-lifecycle` ns with pure-data IR walkers
+  (`declarative?`, `needs-implicit-checkout?`, `inject-implicit-
+  checkout`). Dispatcher's `h-checkout` branches on `:implicit?` —
+  calls `scm/provision!` against the registered `:scm` config;
+  propagates `:failed` honestly. Runner wires injection between
+  matrix expansion and dispatch. Idempotent: skips if workspace
+  already has a matching `.git` directory. Receipt:
+  `docs/jenkins-compat/an8-4-scm-checkout-lifecycle.md`.
+
+### Other v0.5.x continuation in v0.6
+
+- **AN7-5a parse expansion** carries forward (PR #95): the four
+  resource flags now reach BOTH docker and k8s backends via the
+  same structured `:resource-limits` map (chengis-core 0.4
+  K8sBackend honors it natively as pod resource requests/limits).
+
+- **AN7-5b operator overrides** (PR #96) get hot-reload (T4 above)
+  + apply identically to k8s pods (the `:docker-resource-limits`
+  key is backend-agnostic — name will likely flip to
+  `:resource-limits` in v0.7).
+
+### Locked decisions (AV6-1..9)
+
+| ID | Decision |
+|---|---|
+| AV6-1 | v0.6 ships both threads; honesty doesn't gate ship |
+| AV6-2 | K8s backend lives in chengis-core (consumed via `ExecutionBackend`) |
+| AV6-3 | Vault + KMS as operator-pluggable adapters |
+| AV6-4 | SLSA L4 hermetic OUT — pushes to v0.7 |
+| AV6-5 | Wild-corpus target ≥ 8 of 14 (aspirational 11-12) |
+| AV6-6 | `:unsupported` over fake `:success` (carries AV5-6) |
+| AV6-7 | AN8 lands alongside infra, not gating |
+| AV6-8 | 8/14 target aspirational, not gating |
+| AV6-9 | Public deployment gradient rear-view (carries AV5-9) |
+
+### Cross-repo deliverables
+
+- **chengis-core 0.4.0** tagged (PR #14) — initial K8sBackend impl
+- **chengis-core 0.4.1** tagged (PR #16) — Copilot review fixes
+  (string label keys, docstring accuracy)
+- **anvil dep bump** from chengis-core 0.3.0 → 0.4.1
+
+### Headline counts
+
+- **9 v0.6 PRs merged** + **3 chengis-core PRs** + 2 receipts
+- **0 rollbacks** across the v0.6 window
+- Full anvil suite at ship: see T6 receipt
+
+### Reserved SSE event types (T0)
+
+`:pod-scheduled`, `:pod-completed`, `:secret-resolved`,
+`:dockerfile-built` — all wired live; subscribers in
+`anvil.events.topics`. Total event type count: 24 (6 existing + 5
+v0.3 + 4 v0.4 + 5 v0.5 + 4 v0.6).
+
+### Migration
+
+- `:vault-backend`, `:cloud-kms-backend`, `:k8s-agent`,
+  `:dockerfile-multistage` graduate to default-on. Each is a no-op
+  without operator config, so single-tenant non-cluster v0.5.x
+  deployments see no behavioral change. Operators on
+  k8s-unreachable hosts who want explicit `agent { kubernetes }`
+  shapes to fail-fast can `false` the `:k8s-agent` flag.
+- AN8 flags (`:tools-directive`, `:parameters-defaults`,
+  `:scm-checkout-lifecycle`) stay closed-by-default through v0.6.0;
+  flip per deployment after running the wild-corpus or your own
+  build set to confirm the new translation matches your Jenkinsfile
+  shapes. See `docs/migration/v0.5-to-v0.6.md`.
+
+### Wild-corpus impact
+
+See `docs/jenkins-compat/wild-corpus-honest-receipt.md` v0.6.0
+section + T6 receipt for the actual per-build verdicts after rerun.
 
 ---
 
