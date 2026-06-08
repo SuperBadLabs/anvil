@@ -822,6 +822,70 @@
              (seq cl-choices) (assoc :choices (filterv some? cl-choices)))))))))
 
 ;; ---------------------------------------------------------------------------
+;; AN8-1 — `tools { maven 'X' jdk 'Y' }` directive
+;;
+;; The declarative tools block names tool installations Jenkins's
+;; "Manage Tools" UI knows how to provision (Maven, JDK, Gradle, etc).
+;; anvil never provisions toolchains itself (per the v0.6 anti-goal:
+;; "no anvil-managed JDK installer"). Instead the operator maps a
+;; tool-spec to a pre-baked docker image via :anvil.tools/images in
+;; anvil.edn; the dispatcher substitutes that image into the stage's
+;; active-agent. Without a mapping, the dispatcher emits a
+;; :tools/unmapped effect and the stage runs on the original agent.
+;;
+;; This translator step normalizes the tools block into a vector of
+;; {:type :maven|:jdk|:gradle|:nodejs|... :version "X"} maps. The
+;; dispatcher computes the image-lookup key from this shape.
+;; ---------------------------------------------------------------------------
+
+(defn- tool-version-from-call
+  "Extract the version string from a single tools-block child call.
+   The version can arrive as:
+     (a) :const cdata — `maven 'maven_3_latest'`
+     (b) :gstring cdata — `jdk \"${JAVA_VERSION}\"` (GString)
+     (c) :var cdata — `jdk JDK_NAME` (bare identifier)
+   For (b) and (c) we return the raw template / identifier text so
+   the dispatcher's tools/unmapped effect carries diagnostic info.
+   Operator mappings that explicitly include the template text (e.g.
+   `\"jdk_${JAVA_VERSION}\"` → image) still match — the translator's
+   contract is to expose the surface, not to interpret the runtime
+   variable."
+  [call]
+  (let [a (first (:args call))]
+    (cond
+      (nil? a) nil
+      (= :const (:type a)) (some-> (const-val a) str)
+      (= :gstring (:type a)) (str (:text a))
+      (= :var (:type a)) (str (:name a))
+      :else (str (:text a)))))
+
+(defn- translate-tools
+  "Parse a `tools { … }` block into structured IR.
+
+   Recognized at AN8-1:
+     `maven 'X'`    → {:type :maven  :version \"X\"}
+     `jdk 'Y'`      → {:type :jdk    :version \"Y\"}
+     `gradle 'Z'`   → {:type :gradle :version \"Z\"}
+     `nodejs 'N'`   → {:type :nodejs :version \"N\"}
+   Any other named tool falls through as {:type (keyword name) :version ...}
+   so the operator can map for tools we don't pre-register.
+
+   Returns a vector of tool maps in declaration order. nil when the
+   block is empty or has no recognizable children."
+  [tools-call]
+  (when tools-call
+    (when-let [closure (closure-arg tools-call)]
+      (let [body (body-calls closure)
+            tools (->> body
+                       (keep (fn [c]
+                               (when-let [nm (:name c)]
+                                 (let [v (tool-version-from-call c)]
+                                   (cond-> {:type (keyword nm)}
+                                     v (assoc :version v))))))
+                       vec)]
+        (when (seq tools) tools)))))
+
+;; ---------------------------------------------------------------------------
 ;; AN7-2 — ${X} GString interpolation in declarative-pipeline string contexts
 ;;
 ;; Per R5 (board): scope strictly to declarative-pipeline string contexts:
@@ -1154,6 +1218,10 @@
         post-call  (find-call body "post")
         agent-call (find-call body "agent")
         env-call   (find-call body "environment")
+        ;; AN8-1: stage-level tools { … } directive, overriding the
+        ;; pipeline-level tools for this stage. The dispatcher merges
+        ;; stage > pipeline at stage-enter time.
+        tools-call (find-call body "tools")
         ;; AN5-6: declarative matrix-block-inside-stage. apache-camel and
         ;; apache-cxf put `matrix { axes {} stages {} }` directly inside
         ;; a stage body (no top-level `steps` call). Before AN5-6 this
@@ -1193,6 +1261,7 @@
       env-call   (assoc :environment (translate-environment (closure-arg env-call) source closure-objs))
       post       (assoc :post post)
       matrix-ir  (assoc :matrix matrix-ir)
+      tools-call (assoc :tools (translate-tools tools-call))
       nested-children (assoc :children nested-children))))
 
 (defn- expand-matrix-stage
@@ -1247,7 +1316,8 @@
         parent-name (:name parent-stage)
         parent-agent (:agent parent-stage)
         parent-env (or (:environment parent-stage) {})
-        parent-post (:post parent-stage)]
+        parent-post (:post parent-stage)
+        parent-tools (:tools parent-stage)]
     (mapv
      (fn [child]
        (let [child-name (str parent-name " / " (:name child))]
@@ -1259,7 +1329,15 @@
            (update :environment #(merge parent-env (or % {})))
 
            (and parent-post (not (:post child)))
-           (assoc :post parent-post))))
+           (assoc :post parent-post)
+
+           ;; AN8-1: parent's :tools propagate to children unless the
+           ;; child declares its own. Mirrors Jenkins's wrapper-stage
+           ;; semantics — apache-struts' `JDK 21 { tools { … } stages
+           ;; { stage('Test') { … } } }` wants `Test` to inherit the
+           ;; jdk_21 tools spec without re-declaring it.
+           (and (seq parent-tools) (not (:tools child)))
+           (assoc :tools parent-tools))))
      children)))
 
 (defn- translate-stages
@@ -1506,7 +1584,7 @@
              :stages (when stages-call (translate-stages stages-call source closure-objs))
              :post   (when post-call (translate-post-body (closure-arg post-call) source closure-objs))
              :environment (when env-call (translate-environment (closure-arg env-call) source closure-objs))
-             :tools   (when tools-call    [{:raw "<see anvil.compat.jenkins.translator/translate-tools>"}])
+             :tools   (when tools-call    (translate-tools tools-call))
              :options (when options-call  [{:raw "<options block>"}])
              :triggers (when triggers-call [{:raw "<triggers block>"}])
              :libraries (when (seq libs) libs)}))))

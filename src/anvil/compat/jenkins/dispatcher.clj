@@ -30,7 +30,9 @@
             [anvil.compat.jenkins.plugins :as plugins]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.scm :as scm]
-            [anvil.compat.jenkins.shared-libs :as shared-libs]))
+            [anvil.compat.jenkins.shared-libs :as shared-libs]
+            [anvil.tools.images :as tools-images]
+            [anvil.features :as features]))
 
 (declare ^:private dispatch-fn run-body propagate-or-ok h-sh)
 
@@ -1792,12 +1794,53 @@
         ;; and anvil's pluggable executors — the unlock for the
         ;; wild-corpus dirty-dozen, all of which use agent { label
         ;; '...' } rather than agent { docker { ... } }.
+        ;;
+        ;; AN8-1: when the stage's effective `tools { maven 'X' jdk 'Y' }`
+        ;; spec resolves through :anvil.tools/images in anvil.edn to a
+        ;; pre-baked image, AND the current agent isn't already declaring
+        ;; its own docker image (Jenkinsfile-declared `agent { docker
+        ;; { image '...' } }` wins — operator never overrides an
+        ;; explicit author choice), upgrade :active-agent to that image.
+        ;; No mapping → :tools/unmapped effect + the existing agent
+        ;; resolution stands.
+        tools-spec (:tools step)
+        tools-feature-on? (try (features/enabled? :tools-directive)
+                               (catch Throwable _ false))
+        explicit-docker? (or (:docker (:agent step))
+                             (:dockerfile (:agent step))
+                             (and resolved (= :docker (:executor resolved))))
+        tools-resolution (when (and tools-feature-on?
+                                    (seq tools-spec)
+                                    (not explicit-docker?))
+                           (tools-images/resolve-image tools-spec))
+        _ (when (and tools-feature-on? (seq tools-spec))
+            (if (and tools-resolution (:image tools-resolution))
+              (log-effect d [:tools/resolved
+                             {:stage (:stage step)
+                              :tools tools-spec
+                              :matched-key (:matched-key tools-resolution)
+                              :image (:image tools-resolution)}])
+              (log-effect d [:tools/unmapped
+                             {:stage (:stage step)
+                              :tools tools-spec
+                              :candidate-keys (:candidate-keys tools-resolution)
+                              :explain (str "no :anvil.tools/images mapping for "
+                                            (pr-str tools-spec)
+                                            " — falling back to current agent. "
+                                            "Add a mapping under one of the candidate keys "
+                                            "in anvil.edn.")}])))
+        tools-upgrade (when (and tools-resolution (:image tools-resolution))
+                        {:docker {:image (:image tools-resolution)}
+                         :resolved-from-tools
+                         {:tools tools-spec
+                          :matched-key (:matched-key tools-resolution)}})
         active-agent (or dockerfile-upgrade
                          (and resolved
                               (= :docker (:executor resolved))
                               (:docker resolved)
                               {:docker (:docker resolved)
                                :resolved-from-label label})
+                         tools-upgrade
                          (:agent step))]
     (when (and resolved (:degraded? resolved))
       (log-effect d [:agent/degraded
