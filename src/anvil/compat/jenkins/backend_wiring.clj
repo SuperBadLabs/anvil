@@ -73,16 +73,26 @@
         (:namespace k)       (assoc :namespace (:namespace k))
         (:resource-limits k) (assoc :resource-limits (:resource-limits k))))))
 
+;; anvil.config/load-edn is documented as "read once" (no hot-reload —
+;; restart the process to pick up an edit, matching anvil.config's
+;; stance). Cache the resolved kubeconfig override for the process
+;; lifetime so a k8s-heavy pipeline doesn't re-read anvil.edn from
+;; disk per step (PR #104 Copilot review).
+(def ^:private kubeconfig-override-cache
+  (delay
+    (try
+      (-> (config/load-edn "anvil" {})
+          :anvil.k8s/kubeconfig-path)
+      (catch Throwable _ nil))))
+
 (defn- k8s-kubeconfig-override
   "Resolve the operator's kubeconfig override from anvil.edn (the v0.6
    T1.5 `:anvil.k8s/kubeconfig-path` key). Returns nil when no override
    is set, in which case the K8sBackend falls back to KUBECONFIG env →
-   ~/.kube/config."
+   ~/.kube/config. Memoized per JVM lifetime — restart to pick up an
+   anvil.edn edit (matches anvil.config's read-once stance)."
   []
-  (try
-    (-> (config/load-edn "anvil" {})
-        :anvil.k8s/kubeconfig-path)
-    (catch Throwable _ nil)))
+  @kubeconfig-override-cache)
 
 (defn- file-mounts->extra-args
   "Convert AN7-3 file-mount specs [{:host-path :container-path …}] into

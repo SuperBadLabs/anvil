@@ -142,14 +142,20 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest deferred-flips-with-flag-and-image-availability
-  (testing "flag off → deferred"
-    (features/set! :k8s-agent false)
-    (is (true? (agent/deferred? {:kubernetes {:image "busybox:1.36"}}))))
-  (testing "flag on + image → NOT deferred (runtime honors)"
-    (features/set! :k8s-agent true)
-    (is (false? (agent/deferred? {:kubernetes {:image "busybox:1.36"}}))))
-  (testing "flag on + no image → deferred (degrade honestly)"
-    (features/set! :k8s-agent true)
-    (is (true? (agent/deferred? {:kubernetes {:raw-form :unknown}}))))
-  ;; Restore the post-T1 default-on state.
-  (features/set! :k8s-agent true))
+  ;; Capture + restore the original flag state in `finally` so an
+  ;; assertion failure mid-test doesn't leak a stale flag value into
+  ;; subsequent tests (which would cause order-dependent failures —
+  ;; PR #104 Copilot review).
+  (let [original (features/enabled? :k8s-agent)]
+    (try
+      (testing "flag off → deferred"
+        (features/set! :k8s-agent false)
+        (is (true? (agent/deferred? {:kubernetes {:image "busybox:1.36"}}))))
+      (testing "flag on + image → NOT deferred (runtime honors)"
+        (features/set! :k8s-agent true)
+        (is (false? (agent/deferred? {:kubernetes {:image "busybox:1.36"}}))))
+      (testing "flag on + no image → deferred (degrade honestly)"
+        (features/set! :k8s-agent true)
+        (is (true? (agent/deferred? {:kubernetes {:raw-form :unknown}}))))
+      (finally
+        (features/set! :k8s-agent original)))))
