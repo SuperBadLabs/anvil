@@ -5,7 +5,7 @@ category: feature
 purpose: Content-addressed step-level build cache. v0.5 T1.
 lifecycle: live
 last-verified: 2026-06-08
-status: in-progress (T1.1 + T1.2 shipped)
+status: in-progress (T1.1 + T1.2 + T1.3 shipped; T1.4 doc landed)
 ---
 
 # Remote Build Cache
@@ -20,8 +20,8 @@ status: in-progress (T1.1 + T1.2 shipped)
 
 - [x] **T1.1** — `anvil.cache.key/derive` — pure-fn key derivation
 - [x] **T1.2** — `anvil.cache.local-store` — atomic-rename CAS, LRU eviction
-- [ ] **T1.3** — dispatcher hook (lookup before run, store on success)
-- [ ] **T1.4** — invariants receipt
+- [x] **T1.3** — dispatcher hook (lookup before run, store on success) — PR #81
+- [x] **T1.4** — invariants receipt — `docs/cache/invariants.md`
 - [ ] **T1.5** — optional remote object-store adapter
 - [ ] **T1.6** — browser smoke test
 
