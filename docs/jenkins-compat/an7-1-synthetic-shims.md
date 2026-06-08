@@ -78,10 +78,13 @@ board before AN7-4 can convert apache-maven to type-A.
 
 | Shim | Retires when |
 |---|---|
-| apache-maven | **AN7-4 ships.** External `@Library` loader resolves `pipeline-library/mavenBuild()` honestly. |
-| apache-activemq | A future AN7-5 (or operator config) provisions enough docker memory + Surefire JVM args to keep the test phase from OOMing. |
-| apache-zookeeper | Same — test infra tuning per AN7-5. |
-| eclipse-jdt-core | Same — JDT's test suite is more intrinsic than activemq's; may need upstream test-skip annotations. |
+| apache-maven | **AN7-4 shipped in v0.5.0 (PR #88).** Shim retirement pending a real Jenkinsfile rerun against the AN7-4 `@Library` loader. |
+| apache-activemq | Updated post-AN7-5c: needs `parameters { choice(...) }` translation honoring choice defaults + `tools` directive support. Memory tuning via AN7-5 (PR #96 `:anvil.build-overrides`) is necessary-but-insufficient — verified [in the AN7-5c experiment receipt](an7-5c-tuning-experiment-receipt.md). |
+| apache-zookeeper | Updated post-AN7-5c: needs matrix-declarative-with-tools translation + the SCM-checkout-before-stage-1 lifecycle. Memory tuning insufficient — the real Jenkinsfile fails on `git clean -fxd` against an empty workspace in 863 ms, long before any test phase runs. |
+| eclipse-jdt-core | **Unchanged.** Intrinsic to upstream test suite — needs upstream test-skip annotations or Eclipse-compiler skip flag. Out of scope for any AN7-N tranche. |
+
+See [an7-5c-tuning-experiment-receipt.md](an7-5c-tuning-experiment-receipt.md)
+for the live experiment that updated these criteria.
 
 The wild-corpus honest receipt at T6 calls out each retirement criterion
 so future operators know what's left to honestly fix.
