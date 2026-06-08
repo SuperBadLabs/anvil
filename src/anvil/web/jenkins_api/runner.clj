@@ -18,13 +18,16 @@
             [anvil.compat.jenkins.translator :as t]
             [anvil.compat.jenkins.matrix-expander :as mx]
             [anvil.compat.jenkins.dispatcher :as ad]
+            [anvil.compat.jenkins.ir :as ir]
             [anvil.compat.jenkins.libraries :as libraries]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.env :as jenkins-env]
             [anvil.compat.jenkins.scm :as scm]
             [anvil.compat.jenkins.scm-lifecycle :as scm-lifecycle]
             [anvil.web.jenkins-api.jobs :as jobs]
-            [anvil.web.log-tail :as log-tail]))
+            [anvil.web.log-tail :as log-tail]
+            [anvil.parameters-defaults :as params-defaults]
+            [anvil.features :as features]))
 
 (defn- flatten-pipeline
   "Squash a Jenkins pipeline IR's stages + post hooks into the linear
@@ -116,13 +119,36 @@
           workspace-path (.getAbsolutePath workspace)
           log-file (ensure-log-file! workspace)
           log-path (.getAbsolutePath log-file)
+          ;; AN8-2: parse the Jenkinsfile up front so we can extract
+          ;; the declarative `parameters { choice(...) }` defaults
+          ;; and merge them under operator-side defaults and the
+          ;; runtime-supplied parameters (runtime wins). When the
+          ;; feature flag is off, only runtime params are used —
+          ;; preserving v0.5.x behavior. Parsing is idempotent; the
+          ;; pipeline-ir is re-used below.
+          source-pre (:jenkinsfile-source job)
+          pipeline-ir-pre (when source-pre
+                            (try (t/parse source-pre (str job-name "/Jenkinsfile"))
+                                 (catch Throwable _ nil)))
+          params-feature-on? (try (features/enabled? :parameters-defaults)
+                                  (catch Throwable _ false))
+          translator-defaults (when params-feature-on?
+                                (ir/default-parameters pipeline-ir-pre))
+          operator-defaults (when params-feature-on?
+                              (params-defaults/for-job job-name))
+          effective-parameters (if params-feature-on?
+                                 (params-defaults/resolve-build-parameters
+                                  {:translator-defaults translator-defaults
+                                   :operator-defaults operator-defaults
+                                   :runtime-params parameters})
+                                 (or parameters {}))
           ;; Jenkins env vars populated for the build.
           env-vars (jenkins-env/build-env
                     {:build-number number
                      :build-id (str number)
                      :job-name job-name
                      :workspace workspace-path
-                     :extra-env (or parameters {})})]
+                     :extra-env effective-parameters})]
       ;; Wild-corpus follow-up: if the job has :scm configured, fetch
       ;; the source into the workspace BEFORE any step runs. Without
       ;; this, Jenkinsfiles whose first sh references workspace files
@@ -160,7 +186,12 @@
                 :started-at (java.time.Instant/now)})
         (try
           (let [source (:jenkinsfile-source job)
-                base-ir (t/parse source (str job-name "/Jenkinsfile"))
+                ;; AN8-2: reuse the up-front parse if we did one for
+                ;; parameter-default extraction. Falls through to a
+                ;; fresh parse otherwise (preserving v0.5.x behavior
+                ;; when the pre-parse path failed).
+                base-ir (or pipeline-ir-pre
+                            (t/parse source (str job-name "/Jenkinsfile")))
                 ;; TX11B: expand matrix combinations (scripted-Pipeline files
                 ;; with .combinations { … } blocks need their templated
                 ;; stages materialized before dispatch).
@@ -182,6 +213,18 @@
                 flat-stages (flatten-pipeline pipeline-ir)
                 flat {:stages (vec flat-stages)}
                 dispatcher (ad/make {:execute? execute?})
+                ;; AN8-2: surface the parameters resolution in the
+                ;; effect log so operators see exactly which defaults
+                ;; flowed in from where. No-op when feature off.
+                _ (when params-feature-on?
+                    (swap! (:effects dispatcher)
+                           conj
+                           [:parameters/defaults-applied
+                            {:job-name job-name
+                             :translator-defaults (or translator-defaults {})
+                             :operator-defaults (or operator-defaults {})
+                             :runtime-params (or parameters {})
+                             :effective effective-parameters}]))
                 ;; AN5-2 + AN7-4: probe every `@Library` coordinate.
                 ;; AN7-4 extends AN5-2: tries Git resolution first
                 ;; (clones from :anvil.libs/remotes in anvil.edn, cached
@@ -202,7 +245,7 @@
                      :build-number number
                      :job-name job-name
                      :scm (:scm job)          ;; AN8-4: implicit checkout handler reads this
-                     :parameters (or parameters {})}
+                     :parameters effective-parameters}
                 result (d/run-pipeline flat dispatcher ctx)
                 effects @(:effects dispatcher)
                 ;; CC2-EX2 wire-up (AN4-1): instead of the lossy
