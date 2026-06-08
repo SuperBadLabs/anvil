@@ -562,3 +562,149 @@
           "honest gap — dispatcher emits :container/missing-image at runtime
            so the build doesn't silently drop the body"))))
 
+;; ---------------------------------------------------------------------------
+;; AN7-2 — ${X} GString interpolation in declarative-pipeline string contexts
+;; ---------------------------------------------------------------------------
+
+(deftest an7-2-gstring-agent-label-resolved-from-choice-param
+  (testing "apache-camel style: agent { label \"${PLATFORM}\" } with choice parameter"
+    ;; apache-camel's real Jenkinsfile: agent { label "${PLATFORM}" }
+    ;; with `parameters { choice(name:'PLATFORM', choices:['linux','windows']) }`
+    (let [ir (t/parse
+              "pipeline {
+                 parameters {
+                   choice(name: 'PLATFORM', choices: ['linux', 'windows'], description: '')
+                 }
+                 agent { label \"${PLATFORM}\" }
+                 stages {
+                   stage('Build') {
+                     steps { sh 'make' }
+                   }
+                 }
+               }")]
+      (is (= "linux" (get-in ir [:agent :label]))
+          "choice defaultValue (first choice) used when no explicit defaultValue")
+      ;; Groovy's GStringExpression.getText() normalizes "${PLATFORM}" → "$PLATFORM"
+      ;; (no curly braces in the cdata text). The interpolated-from field carries
+      ;; whichever form the cdata delivered — tests must match that form.
+      (is (some? (get-in ir [:agent :interpolated-from]))
+          "interpolated-from carries the original GString template text"))))
+
+(deftest an7-2-gstring-agent-label-resolved-from-string-param-default
+  (testing "agent { label \"${PLATFORM}\" } with string parameter and defaultValue"
+    (let [ir (t/parse
+              "pipeline {
+                 parameters {
+                   string(name: 'PLATFORM', defaultValue: 'linux', description: 'Build platform')
+                 }
+                 agent { label \"${PLATFORM}\" }
+                 stages {
+                   stage('Build') {
+                     steps { sh 'make' }
+                   }
+                 }
+               }")]
+      (is (= "linux" (get-in ir [:agent :label]))
+          "string param defaultValue substituted into agent label")
+      (is (some? (get-in ir [:agent :interpolated-from]))))))
+
+(deftest an7-2-gstring-agent-label-multi-var-resolved
+  (testing "multi-variable GString: agent { label \"${OS}-${ARCH}\" } both resolved"
+    ;; Two parameters, both with defaults → concat substitution
+    (let [ir (t/parse
+              "pipeline {
+                 parameters {
+                   string(name: 'OS', defaultValue: 'linux', description: '')
+                   string(name: 'ARCH', defaultValue: 'amd64', description: '')
+                 }
+                 agent { label \"${OS}-${ARCH}\" }
+                 stages {
+                   stage('Build') {
+                     steps { sh 'build' }
+                   }
+                 }
+               }")]
+      (is (= "linux-amd64" (get-in ir [:agent :label]))
+          "both variables substituted into label string")
+      (is (some? (get-in ir [:agent :interpolated-from]))))))
+
+(deftest an7-2-gstring-agent-label-unresolvable-honest-fallback
+  (testing "agent { label \"${PLATFORM}\" } — no parameter block → honest unresolved"
+    ;; No parameters block at all → PLATFORM cannot be resolved
+    ;; Per AV5-6: emit :unresolved-interpolation, NOT fake static label
+    (let [ir (t/parse
+              "pipeline {
+                 agent { label \"${PLATFORM}\" }
+                 stages {
+                   stage('Build') {
+                     steps { sh 'make' }
+                   }
+                 }
+               }")]
+      (is (= :unresolved-interpolation (get-in ir [:agent :degrade-reason]))
+          "no parameters → :unresolved-interpolation degrade-reason per AV5-6")
+      (is (some? (get-in ir [:agent :gstring-template]))
+          "original template preserved in IR for the dispatcher effect")
+      (is (some #{"PLATFORM"} (get-in ir [:agent :unresolved-vars]))
+          "unresolved variable name surfaced in IR"))))
+
+(deftest an7-2-gstring-sh-bodies-untouched
+  (testing "R5 constraint: sh '...' bodies with ${X} are NOT interpolated"
+    ;; This is the critical anti-regression: ${X} inside sh '' must NOT be
+    ;; touched — it's bash syntax, not Groovy. The translator must leave
+    ;; sh script bodies exactly as-is.
+    (let [ir (t/parse
+              "pipeline {
+                 parameters {
+                   string(name: 'VERSION', defaultValue: '1.0', description: '')
+                 }
+                 agent any
+                 stages {
+                   stage('Build') {
+                     steps {
+                       sh 'echo build ${VERSION}'
+                       sh \"echo build ${VERSION}\"
+                     }
+                   }
+                 }
+               }")
+          steps (get-in ir [:stages 0 :steps])]
+      (is (= 2 (count steps)))
+      ;; Single-quoted sh: ${VERSION} is a bash variable — must be verbatim
+      (is (= "echo build ${VERSION}" (get-in steps [0 :script]))
+          "sh single-quote body left verbatim")
+      ;; Double-quoted sh: The GString interpolation in the translator applies
+      ;; only to the cdata path for agent/environment contexts. The sh step
+      ;; translator (translate-sh) keeps the GString text AS-IS per R5.
+      ;; For double-quoted sh, the cdata :gstring node's :text is used directly
+      ;; (see translate-sh line ~152: `(ir/step-sh (:text a))`).
+      ;; The sh handler must NOT call interpolate-gstring.
+      (is (string? (get-in steps [1 :script]))
+          "sh double-quote step produces a string script (no interpolation leakage)")
+      ;; The key assertion: the VERSION variable is NOT substituted to "1.0"
+      ;; in the sh body — that would be a bash context leak
+      (is (not= "echo build 1.0" (get-in steps [1 :script]))
+          "R5: ${VERSION} NOT substituted in sh body — would leak Groovy interpolation into bash"))))
+
+(deftest an7-2-gstring-partial-unresolvable
+  (testing "agent { label \"${OS}-${UNKNOWN}\" } — one var resolvable, one not → unresolved"
+    ;; Only OS has a parameter; UNKNOWN doesn't → whole interpolation fails honestly
+    (let [ir (t/parse
+              "pipeline {
+                 parameters {
+                   string(name: 'OS', defaultValue: 'linux', description: '')
+                 }
+                 agent { label \"${OS}-${UNKNOWN}\" }
+                 stages {
+                   stage('Build') {
+                     steps { sh 'make' }
+                   }
+                 }
+               }")]
+      (is (= :unresolved-interpolation (get-in ir [:agent :degrade-reason]))
+          "partial resolution → whole interpolation fails, not silently degraded")
+      (is (some #{"UNKNOWN"} (get-in ir [:agent :unresolved-vars]))
+          "only the unresolvable variable is listed")
+      (is (not (some #{"OS"} (get-in ir [:agent :unresolved-vars])))
+          "the resolvable variable is NOT in the unresolved list"))))
+

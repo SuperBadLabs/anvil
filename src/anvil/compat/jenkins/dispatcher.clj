@@ -1450,6 +1450,27 @@
                     :reason :param-driven-label
                     :stage (:stage step)
                     :explain "agent { label { label params.X } } — no parameters block parseable"}]))
+  ;; AN7-2 — GString interpolation result effects.
+  ;; (a) When the translator resolved a GString label (e.g.
+  ;;     `agent { label "${PLATFORM}" }` → "linux" from a choice default),
+  ;;     emit :agent/interpolated so operators see the substitution.
+  ;; (b) When the translator could NOT resolve (no matching parameter found
+  ;;     or no default), emit :translator/unresolved-interpolation per AV5-6.
+  ;;     The classifier reads this as honest :unresolved-interpolation.
+  (when-let [tpl (:interpolated-from (:agent step))]
+    (log-effect d [:agent/interpolated
+                   {:gstring-template tpl
+                    :resolved-to (:label (:agent step))
+                    :stage (:stage step)}]))
+  (when (= :unresolved-interpolation (:degrade-reason (:agent step)))
+    (log-effect d [:translator/unresolved-interpolation
+                   {:gstring-template (:gstring-template (:agent step))
+                    :unresolved-vars  (:unresolved-vars (:agent step))
+                    :stage (:stage step)
+                    :explain (str "agent { label \"" (:gstring-template (:agent step))
+                                  "\" } — "
+                                  (pr-str (:unresolved-vars (:agent step)))
+                                  " not in parameters block or no default value")}]))
   ;; Resolve label-based declarative agents through TX11C's registry
   ;; (the same path scripted `node('…')` uses). Without this,
   ;; declarative jobs like `agent { label 'maven-21' }` or even
