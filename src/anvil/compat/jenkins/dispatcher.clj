@@ -1803,9 +1803,29 @@
         ;; explicit author choice), upgrade :active-agent to that image.
         ;; No mapping → :tools/unmapped effect + the existing agent
         ;; resolution stands.
-        tools-spec (:tools step)
+        raw-tools-spec (:tools step)
         tools-feature-on? (try (features/enabled? :tools-directive)
                                (catch Throwable _ false))
+        ;; AN8-3: when the step carries :matrix-axes (this stage is a
+        ;; matrix-expanded cell), interpolate `${AXIS}` references in
+        ;; each tool's :version against the cell's axis values BEFORE
+        ;; the AN8-1 image-lookup runs. Without this, zookeeper's
+        ;; `jdk "${JAVA_VERSION}"` reaches resolve-image as the literal
+        ;; "$JAVA_VERSION" and never matches any operator mapping.
+        axes (:matrix-axes step)
+        {tools-spec :tools
+         axis-subs :substitutions
+         referenced-axes :referenced-axes}
+        (if (and tools-feature-on? (seq raw-tools-spec) (seq axes))
+          (tools-images/interpolate-tools raw-tools-spec axes)
+          {:tools raw-tools-spec :substitutions {} :referenced-axes []})
+        _ (when (and tools-feature-on? (seq referenced-axes))
+            (log-effect d [:tools/axis-interpolated
+                           {:stage (:stage step)
+                            :referenced-axes referenced-axes
+                            :substitutions axis-subs
+                            :tools-before raw-tools-spec
+                            :tools-after tools-spec}]))
         explicit-docker? (or (:docker (:agent step))
                              (:dockerfile (:agent step))
                              (and resolved (= :docker (:executor resolved))))

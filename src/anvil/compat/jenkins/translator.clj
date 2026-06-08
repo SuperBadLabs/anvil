@@ -1253,7 +1253,13 @@
                      ;; treatment as top-level stages (including
                      ;; recursive matrix expansion if anyone nests).
                      (fn [stages-call]
-                       (translate-stages stages-call source closure-objs))))
+                       (translate-stages stages-call source closure-objs))
+                     ;; AN8-3: matrix-level `tools { … }` block (sibling
+                     ;; of axes / stages — zookeeper's real shape). The
+                     ;; parser hands back the raw `tools` :call cdata;
+                     ;; translate-tools normalizes it to the same IR
+                     ;; shape pipeline/stage tools use.
+                     translate-tools))
         nested-children (when nested-stages-call
                           (translate-stages nested-stages-call source closure-objs))]
     (cond-> {:name stage-name :steps (vec (or steps []))}
@@ -1274,6 +1280,14 @@
    precedence). The parent stage's `:agent` and `:post` are
    propagated to every cell.
 
+   AN8-3: matrix-level `tools { … }` (sibling of axes/stages) rides
+   along on each cell as `:tools`; the parent stage's `:tools` (if
+   any) provides the BASE — matrix tools win on collision per the
+   composition rule (more-specific declaration overrides less). The
+   cell's `:axes` map rides along so the dispatcher can interpolate
+   `${JAVA_VERSION}` etc. in tool-version templates before AN8-1's
+   image-lookup runs.
+
    This is the v0.3.3 first cut: cells run serially in IR order, no
    per-cell agent override. v0.4 may add per-cell agent and parallel
    execution; the IR shape stays stable."
@@ -1281,17 +1295,35 @@
   (let [cells (mx-decl/expand-matrix matrix-ir)
         parent-env (or (:environment parent-stage) {})
         parent-agent (:agent parent-stage)
-        parent-post (:post parent-stage)]
+        parent-post (:post parent-stage)
+        parent-tools (:tools parent-stage)]
     (mapv
-     (fn [{:keys [axes env stages]}]
+     (fn [{:keys [axes env stages tools]}]
        (let [cell-label (mx-decl/cell-name axes)
              cell-name (str (:name parent-stage) " [" cell-label "]")
-             all-steps (vec (mapcat :steps stages))]
+             all-steps (vec (mapcat :steps stages))
+             ;; AN8-3 composition: parent-stage tools provide the base;
+             ;; matrix-level tools (the more-specific declaration) win on
+             ;; collision. Tools are vectors of {:type :version} maps —
+             ;; merge by :type so `parent {maven X} + matrix {jdk Y}` →
+             ;; `[maven X, jdk Y]`, but `parent {jdk OLD} + matrix
+             ;; {jdk NEW}` → `[jdk NEW]`.
+             effective-tools (when (or (seq parent-tools) (seq tools))
+                               (let [by-type (reduce (fn [m t]
+                                                       (assoc m (:type t) t))
+                                                     {}
+                                                     (concat (or parent-tools [])
+                                                             (or tools [])))]
+                                 (vec (vals by-type))))]
          (cond-> {:name cell-name
                   :steps all-steps
                   :environment (merge env parent-env)}
            parent-agent (assoc :agent parent-agent)
-           parent-post (assoc :post parent-post))))
+           parent-post (assoc :post parent-post)
+           (seq effective-tools) (assoc :tools effective-tools)
+           ;; The cell's axes ride along so agent.clj can pass them
+           ;; through to the synthetic :jenkins/agent-stage-enter step.
+           (seq axes) (assoc :matrix-axes axes))))
      cells)))
 
 (defn- expand-nested-stages-stage

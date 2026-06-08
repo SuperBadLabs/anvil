@@ -133,3 +133,71 @@
                    keys)]
      (or (assoc hit :candidate-keys keys)
          {:image nil :candidate-keys keys}))))
+
+;; ---------------------------------------------------------------------------
+;; AN8-3 — `${AXIS_VAR}` interpolation in tool versions
+;;
+;; zookeeper's real Jenkinsfile declares `jdk \"${JAVA_VERSION}\"` inside a
+;; matrix block whose axis is `JAVA_VERSION`. The translator surfaces the
+;; GString text — Groovy normalizes it to the bare `$JAVA_VERSION` form
+;; via GStringExpression.getText() (see translator.clj note next to
+;; extract-gstring-vars). Before the AN8-1 image lookup happens, we
+;; substitute against the active matrix cell's axis values so the
+;; lookup key is a fully-resolved string the operator can map.
+;; ---------------------------------------------------------------------------
+
+(defn- interpolate-version
+  "Replace `${VAR}` and `$VAR` in `v` from `axes` (a {name → value} map).
+   Returns the substituted string, or the original if no axis variable
+   appears. Unresolved variables (referenced names that aren't axis
+   keys) are left in place so the candidate-keys list still carries
+   the diagnostic surface and the :tools/unmapped effect (when it
+   fires) reflects what the author actually wrote."
+  [v axes]
+  (let [s (str v)]
+    (if (or (str/blank? s) (empty? axes) (not (str/includes? s "$")))
+      s
+      (reduce-kv
+       (fn [acc k val]
+         (let [name-str (str k)
+               pat (java.util.regex.Pattern/compile
+                    (str "\\$\\{" (java.util.regex.Pattern/quote name-str) "\\}"
+                         "|\\$" (java.util.regex.Pattern/quote name-str) "(?!\\w)"))]
+           (str/replace acc pat
+                        (java.util.regex.Matcher/quoteReplacement (str val)))))
+       s
+       axes))))
+
+(defn interpolate-tools
+  "AN8-3 — given `tools` (the translator IR vector) and `axes` (a
+   {axis-name axis-value} map, typically from the active matrix cell),
+   return a new tools vector with every `${AXIS}`/`$AXIS` reference in
+   each tool's `:version` substituted from `axes`. When `axes` is empty
+   or `tools` is nil, returns `tools` unchanged (no allocation).
+
+   Tracks which axis names were referenced so the dispatcher can emit a
+   `:tools/axis-interpolated` diagnostic effect alongside the AN8-1
+   `:tools/resolved` (or `:tools/unmapped`) effect."
+  [tools axes]
+  (if (or (empty? axes) (empty? tools))
+    {:tools tools :substitutions {} :referenced-axes []}
+    (let [refs (volatile! #{})
+          out (mapv
+               (fn [t]
+                 (let [v (:version t)
+                       new-v (when v (interpolate-version v axes))]
+                   (when (and v (not= v new-v))
+                     (doseq [k (keys axes)]
+                       (let [name-str (str k)
+                             pat (java.util.regex.Pattern/compile
+                                  (str "\\$\\{" (java.util.regex.Pattern/quote name-str) "\\}"
+                                       "|\\$" (java.util.regex.Pattern/quote name-str) "(?!\\w)"))]
+                         (when (re-find pat (str v))
+                           (vswap! refs conj name-str)))))
+                   (cond-> t
+                     (and v (not= v new-v)) (assoc :version new-v
+                                                   :version-template (str v)))))
+               tools)]
+      {:tools out
+       :referenced-axes (vec @refs)
+       :substitutions (select-keys axes @refs)})))
