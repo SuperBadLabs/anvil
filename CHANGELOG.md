@@ -1,5 +1,52 @@
 # anvil — changelog
 
+## Unreleased — top-level Groovy `def NAME = expr` script bindings
+
+Real Jenkinsfiles routinely declare file-scope vars above the
+`pipeline { }` block and reference them inside (`label AGENT_LABEL`,
+`jdk JDK_NAME`, `sh "${MAVEN_PARAMS} ..."`). Before this fix the
+translator ignored those `def`s entirely, so the references fell
+through to `<dynamic>` (label/tools) or the literal `$NAME` text
+(sh GString) — turning camel-quarkus's 48-line Jenkinsfile into a
+`<dynamic>` agent + an unmapped `JDK_NAME` tool before any stage ran.
+
+### Fix
+
+`translator/extract-top-level-defs` walks the AST's top-level
+statements collecting every `def NAME = expr` whose RHS is statically
+resolvable:
+
+  - String literal — `def X = 'value'`
+  - Elvis env-fallback — `def X = env.X ?: 'default'` → `"default"`
+    (env vars aren't known at parse time, so we take the fallback)
+
+Resolved bindings expose through a dynamic var `*script-bindings*`
+for the duration of `parse`. Three call sites consult it:
+
+  - `translate-agent-block`'s label-extraction cond — bare-var form
+    `label X` now resolves to the binding value (or stays `<dynamic>`
+    if unresolvable, matching legacy behavior).
+  - `tool-version-from-call` — `jdk X` / `maven X` substitutes the
+    binding value into `:version` instead of the var-name string.
+  - `translate-sh` — GString sh bodies (`sh "...${X}..."`) substitute
+    `$X` / `${X}` when `X` is a binding. Bash refs (`$HOME`) and
+    unresolved Groovy refs are left untouched, and single-quoted
+    Groovy strings (`sh '...$X...'`, the `:const` case) are never
+    touched.
+
+Unresolvable defs are surfaced as a `:script-bindings-unresolvable`
+option entry on the pipeline IR so operators see what was referenced
+but couldn't be statically resolved.
+
+### Tests
+
+11 new tests in `translator-script-bindings-test`, covering string
+literals, env-fallback Elvis, tools-version resolution, GString
+interpolation, bash-var pass-through, single-quoted untouched,
+unresolvable-stays-dynamic, mixed resolvable+unresolvable, and a
+wild-corpus regression against camel-quarkus's actual Jenkinsfile
+shape (def AGENT_LABEL / JDK_NAME / MAVEN_PARAMS, all three used).
+
 ## 0.6.1 — AN8-4 non-fatal-on-populated-workspace heuristic (2026-06-08)
 
 Patch release for the regression the v0.6.0 dirty-dozen rerun

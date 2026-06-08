@@ -19,9 +19,13 @@
            [org.codehaus.groovy.ast.expr ArgumentListExpression
             ClosureExpression
             ConstantExpression
+            DeclarationExpression
+            ElvisOperatorExpression
             GStringExpression
             MethodCallExpression
-            TupleExpression]))
+            TupleExpression
+            VariableExpression]
+           [org.codehaus.groovy.ast.stmt BlockStatement ExpressionStatement]))
 
 ;; ---------------------------------------------------------------------------
 ;; :cdata walking helpers
@@ -111,6 +115,113 @@
 (declare translate-call translate-steps-body map-arg-kv list-arg-strings
          translate-stages translate-stage)
 
+;; ---------------------------------------------------------------------------
+;; v0.6.2 — Top-level Groovy `def NAME = expr` script bindings.
+;;
+;; Real-world Jenkinsfiles routinely declare file-scope vars above the
+;; `pipeline { }` block and reference them inside (label AGENT_LABEL,
+;; jdk JDK_NAME, sh "${MAVEN_PARAMS} ..."). The translator previously
+;; ignored these defs entirely, so any reference fell through to
+;; `<dynamic>` (label/tools) or passed `$NAME` literally to the shell.
+;;
+;; This pass walks `top-statements` BEFORE pipeline translation, picks
+;; out every `def NAME = <expr>` whose RHS is statically resolvable,
+;; and exposes the resulting NAME→STRING map via `*script-bindings*`.
+;; The dynamic var pattern (rather than threading the map through every
+;; translate-* signature) keeps existing arglists stable while making
+;; the bindings reachable from translate-agent-block, translate-tools,
+;; and translate-sh.
+;;
+;; Resolvable RHS shapes (v0.6.2):
+;;   - String literal:                def X = 'value'
+;;   - Elvis env.X ?: 'default':      def X = env.X ?: 'default'  → "default"
+;;     (env not known at parse time, so we always take the fallback)
+;;
+;; Unresolved entries are recorded under `*script-bindings-unresolvable*`
+;; so the pipeline IR can carry a diagnostic option entry for operator
+;; visibility — they don't override anything and downstream consumers
+;; fall through to existing behavior (`<dynamic>` / `<unmapped>` etc.).
+;; ---------------------------------------------------------------------------
+
+(def ^:dynamic *script-bindings*
+  "Map of {NAME STRING} extracted from top-level `def NAME = expr`
+   statements in the Jenkinsfile. Bound by `parse`; nil outside of a
+   parse call."
+  nil)
+
+(def ^:dynamic *script-bindings-unresolvable*
+  "Set of NAME strings whose top-level `def` RHS could not be statically
+   resolved (e.g. method calls, dynamic property access)."
+  nil)
+
+(defn- resolve-declaration-rhs
+  "Try to statically resolve a DeclarationExpression's RHS to a string.
+   Returns [:ok STRING] if resolved, [:unresolved] otherwise."
+  [rhs]
+  (cond
+    ;; def X = 'string'
+    (instance? ConstantExpression rhs)
+    (let [v (.getValue ^ConstantExpression rhs)]
+      (if (or (string? v) (number? v) (boolean? v))
+        [:ok (str v)]
+        [:unresolved]))
+
+    ;; def X = env.X ?: 'default'  → fall back to 'default' (env unknown
+    ;; at parse). If the true-expr happens to be a literal ('a' ?: 'b'),
+    ;; prefer it.
+    (instance? ElvisOperatorExpression rhs)
+    (let [^ElvisOperatorExpression el rhs
+          true-expr (.getTrueExpression el)
+          false-expr (.getFalseExpression el)]
+      (cond
+        (instance? ConstantExpression true-expr)
+        (resolve-declaration-rhs true-expr)
+
+        :else
+        (resolve-declaration-rhs false-expr)))
+
+    ;; def X = "literal-gstring..."  — too risky to substitute at parse
+    ;; time (env-only GStrings are rare in top-level defs).
+    (instance? GStringExpression rhs)
+    [:unresolved]
+
+    :else
+    [:unresolved]))
+
+(defn extract-top-level-defs
+  "Walk top-level statements collecting `def NAME = expr` bindings.
+   Returns {:resolved {NAME STRING} :unresolved #{NAME}}.
+
+   Descends through nested BlockStatements once (AstBuilder sometimes
+   wraps in extra blocks) but does NOT descend into closures or method
+   bodies — only TOP-LEVEL defs count (per Jenkins script scope: the
+   pipeline closure inherits its enclosing-script bindings, not
+   arbitrary nested ones)."
+  [top-statements]
+  (let [resolved (volatile! {})
+        unresolved (volatile! #{})
+        visit-decl (fn [^DeclarationExpression de]
+                     (let [lhs (.getLeftExpression de)]
+                       (when (instance? VariableExpression lhs)
+                         (let [nm (.getName ^VariableExpression lhs)
+                               rhs (.getRightExpression de)
+                               [tag v] (resolve-declaration-rhs rhs)]
+                           (case tag
+                             :ok (vswap! resolved assoc nm v)
+                             :unresolved (vswap! unresolved conj nm))))))
+        visit-stmt (fn visit-stmt [stmt]
+                     (cond
+                       (instance? ExpressionStatement stmt)
+                       (let [e (.getExpression ^ExpressionStatement stmt)]
+                         (when (instance? DeclarationExpression e)
+                           (visit-decl e)))
+
+                       (instance? BlockStatement stmt)
+                       (doseq [s (.getStatements ^BlockStatement stmt)]
+                         (visit-stmt s))))]
+    (doseq [stmt top-statements] (visit-stmt stmt))
+    {:resolved @resolved :unresolved @unresolved}))
+
 (defn- args->plain
   "Reduce :cdata args to plain Clojure values for the :jenkins/unknown
    payload + the migration-UX 'what does this step take?' display."
@@ -140,6 +251,26 @@
             (str a)))
         args))
 
+(defn- interpolate-script-bindings
+  "Substitute every `$NAME` / `${NAME}` reference in `text` with the
+   corresponding entry from `*script-bindings*`. References whose NAME
+   isn't in the binding map are left untouched (so genuine bash `$VAR`
+   refs and unresolved Groovy refs both pass through unchanged).
+
+   ONLY called against GString contexts where `$X` is a Groovy variable
+   reference. Single-quoted Groovy strings (the conventional `sh '...'`
+   shape) come through as :const and are never touched."
+  [text]
+  (let [bindings *script-bindings*
+        t (str text)]
+    (if (seq bindings)
+      (-> t
+          (str/replace #"\$\{([A-Za-z_]\w*)\}"
+                       (fn [[whole nm]] (or (get bindings nm) whole)))
+          (str/replace #"\$([A-Za-z_]\w*)"
+                       (fn [[whole nm]] (or (get bindings nm) whole))))
+      t)))
+
 (defn- translate-sh
   [call _source _closure-objs]
   (let [args (:args call)]
@@ -148,7 +279,10 @@
       (let [a (first args)]
         (case (:type a)
           :const   (ir/step-sh (:value a))
-          :gstring (ir/step-sh (:text a))   ; "$VAR ..." interpolated string
+          ;; v0.6.2 — GString sh body may reference top-level `def` vars
+          ;; (`sh "./mvnw ${MAVEN_PARAMS} ..."`). Substitute at translator
+          ;; time so the dispatcher sees the resolved command.
+          :gstring (ir/step-sh (interpolate-script-bindings (:text a)))
           :map     (let [m (map-arg-kv a)]
                      (cond-> (ir/step-sh (str (:script m "")))
                        (:returnStdout m) (assoc :return-stdout? true)
@@ -856,7 +990,13 @@
       (nil? a) nil
       (= :const (:type a)) (some-> (const-val a) str)
       (= :gstring (:type a)) (str (:text a))
-      (= :var (:type a)) (str (:name a))
+      (= :var (:type a))
+      ;; v0.6.2 — bare identifier may name a top-level `def`. Substitute
+      ;; the resolved string when available; otherwise keep the legacy
+      ;; behavior (return the var name verbatim so the operator can see
+      ;; what was referenced in the :tools/unmapped diagnostic).
+      (or (get *script-bindings* (:name a))
+          (str (:name a)))
       :else (str (:text a)))))
 
 (defn- translate-tools
@@ -1214,7 +1354,17 @@
                                         (= :gstring (:type first-arg)))
                                (:text first-arg))
                 gstring-result (when gstring-text
-                                 (interpolate-gstring gstring-text parameters))]
+                                 (interpolate-gstring gstring-text parameters))
+                ;; v0.6.2 — bare-var form: `agent { label AGENT_LABEL }`
+                ;; where AGENT_LABEL is a top-level `def`. If extract-top-
+                ;; level-defs resolved the var, use that value; else fall
+                ;; through to the existing `<dynamic>` behavior.
+                var-name (when (and (nil? static) (nil? nested-inner)
+                                    (nil? gstring-text)
+                                    (map? first-arg)
+                                    (= :var (:type first-arg)))
+                           (:name first-arg))
+                var-binding (when var-name (get *script-bindings* var-name))]
             (cond
               static
               {:label static}
@@ -1241,6 +1391,11 @@
                :gstring-template gstring-text
                :unresolved-vars (:unresolved gstring-result)
                :degrade-reason :unresolved-interpolation}
+
+              ;; v0.6.2 — bare-var resolved via top-level `def` binding.
+              var-binding
+              {:label var-binding
+               :resolved-from {:script-binding var-name}}
 
               :else
               {:label "<dynamic>"}))
@@ -1671,7 +1826,13 @@
      (let [ast (g/parse-groovy-ast source)
            top-statements (g/flatten-top-statements ast)
            top-calls (keep #(when-let [c (g/statement->call-public %)] c) top-statements)
-           pipeline-mc (first (filter #(= "pipeline" (g/method-name-public %)) top-calls))]
+           pipeline-mc (first (filter #(= "pipeline" (g/method-name-public %)) top-calls))
+           ;; v0.6.2 — extract top-level `def NAME = expr` script bindings
+           ;; so label / tools / sh references inside the pipeline can
+           ;; resolve statically.
+           {:keys [resolved unresolved]} (extract-top-level-defs top-statements)]
+       (binding [*script-bindings* resolved
+                 *script-bindings-unresolvable* unresolved]
        (if-not pipeline-mc
          ;; No declarative `pipeline {}` block — try scripted-Pipeline
          ;; extraction. Walks the AST collecting `stage('name') { body }`
@@ -1759,9 +1920,20 @@
              :post   (when post-call (translate-post-body (closure-arg post-call) source closure-objs))
              :environment (when env-call (translate-environment (closure-arg env-call) source closure-objs))
              :tools   (when tools-call    (translate-tools tools-call))
-             :options (when options-call  [{:raw "<options block>"}])
+             :options (let [base (vec (when options-call [{:raw "<options block>"}]))
+                            ;; v0.6.2 — surface top-level script bindings on
+                            ;; the IR so operators see what was resolved (and
+                            ;; what wasn't). Consumers that ignore unknown
+                            ;; option entries are unaffected.
+                            with-bindings (cond-> base
+                                            (seq *script-bindings*)
+                                            (conj {:script-bindings *script-bindings*})
+                                            (seq *script-bindings-unresolvable*)
+                                            (conj {:script-bindings-unresolvable
+                                                   (vec (sort *script-bindings-unresolvable*))}))]
+                        (when (seq with-bindings) with-bindings))
              :triggers (when triggers-call [{:raw "<triggers block>"}])
-             :libraries (when (seq libs) libs)}))))
+             :libraries (when (seq libs) libs)})))))
      (catch Exception e
        ;; Total parse failure — usually means the file is fully scripted
        ;; (no `pipeline {}` at all) or has invalid Groovy syntax we can't
