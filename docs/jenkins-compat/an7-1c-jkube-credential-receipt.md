@@ -211,3 +211,53 @@ Recommended path for v0.5.0:
   k8s + full credential wiring lands)
 - Accept the type-B shim verdict as honest failure
 - Watch for the v0.5.x file-credentials wiring fix in CHANGELOG
+
+## Resolution (v0.5.x)
+
+The gap above was NOT in the translator-to-dispatcher path — the
+translator emits the right shape (`[{:credentialsId "X" :variable "Y"}]`),
+the dispatcher computes `:file-mounts` + `:env` correctly, and the
+wrapped ctx carries both into the body. Verified with a fresh REPL
+repro against the same Jenkinsfile body.
+
+The actual gap was one layer down: `backend_wiring/backend-for-ctx`
+constructs the chengis-core `DockerBackend` with an `:extra-args` key
+containing the `-v host:container:ro` strings, but **chengis-core 0.3.0
+`DockerBackend` ignores `:extra-args` entirely** — `run-disposable-container`
+only consumes `:image`, `:mode`, `:network-mode`, `:resource-limits`,
+`:user`, `:host-user?`, `:cancel-grace-ms`. The mount flags fell on
+the floor between anvil and the daemon.
+
+The unit test passed because it called `dispatcher/build-docker-args`
+directly — an anvil-internal helper that DOES honor file-mounts but
+isn't the actual production code path under chengis-core's docker
+backend.
+
+**Fix** (anvil-side, no chengis-core bump required): when ctx carries
+`:file-mounts` AND the active-agent is docker, `execute-via-backend`
+routes to a new `execute-inline-docker` path in
+[backend_wiring.clj](../../src/anvil/compat/jenkins/backend_wiring.clj)
+that shells out to `docker run --rm` directly via babashka.process,
+using `build-inline-docker-argv` (which appends both the workspace
+mount AND every file-mount as `-v host:container:ro`). The non-credential
+99% path continues using chengis-core's `DockerBackend` with its full
+prepare-workspace + cleanup lifecycle.
+
+The chengis-core docker backend gaining first-class `:mounts` support
+remains the long-term right fix; until then, the inline fallback gives
+us correct file-credential behavior without touching the cross-repo
+dep boundary.
+
+Integration coverage added in
+[file_credentials_test.clj](../../test/anvil/compat/jenkins/file_credentials_test.clj):
+
+- `translator-to-dispatcher-file-cred-end-to-end` — parses real Groovy
+  `withCredentials([file(...)])`, threads through `h-with-credentials`
+  with a docker active-agent, asserts ctx `:file-mounts` and `:env`
+  binding land correctly.
+- `translator-to-dispatcher-non-docker-binds-host-path` — same parse,
+  no docker agent, env var binds host path (matches Jenkins's
+  behavior).
+- `backend-wiring-inline-docker-includes-file-mount-flag` — asserts
+  the inline-docker argv carries the `-v host:container:ro` flag and
+  the `-e VAR=path` flag.

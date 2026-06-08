@@ -6,11 +6,18 @@
    2. :file cred resolves → file-mounts + env-var → container-path
    3. :file credentials do NOT get values added to the secrets masker
    4. :credential-unresolved is still emitted when :file cred is missing
-   5. :file-credential/mounted effect is emitted on resolution"
+   5. :file-credential/mounted effect is emitted on resolution
+   6. AN7-3 fix: translator → dispatcher integration — a real
+      withCredentials([file(...)]) Jenkinsfile parsed through the
+      translator and threaded through h-with-credentials produces a
+      ctx with :file-mounts AND :env populated, and the inline-docker
+      argv emitted by backend-wiring contains the -v ...:ro flag."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.java.io :as io]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.dispatcher :as dispatcher]
+            [anvil.compat.jenkins.translator :as translator]
+            [anvil.compat.jenkins.backend-wiring :as backend-wiring]
             [anvil.storage.db :as db]
             [anvil.storage.credentials :as creds])
   (:import [java.nio.file Files]
@@ -203,3 +210,185 @@
           (is (= 1 (-> enter-eff second :file-credential-count))
               "enter effect reports 1 file credential mounted"))
         (finally (.delete tmp))))))
+
+;; ---------------------------------------------------------------------------
+;; Translator → dispatcher integration
+;;
+;; Before this PR the file-credentials tests only exercised the dispatcher
+;; with a hand-rolled `:raw-args "credentialsId: 'X', variable: 'Y'"`
+;; string, which happened to match the regex in
+;; `credential-var-bindings`. The real translator emits a vector-of-maps
+;; shape: `[{:credentialsId "X" :variable "Y"}]`. The (str ...) of that
+;; vector still matches the regex by coincidence, but no test exercised
+;; the end-to-end path — so the AN7-3 regression where the docker
+;; backend dropped file-mounts went unnoticed until the eclipse-jkube
+;; dogfood (PR #93).
+;;
+;; These tests close that gap:
+;;   - parse real Groovy `withCredentials([file(...)])` through the
+;;     translator, locate the :jenkins/with-credentials node
+;;   - dispatch it through h-with-credentials with a docker
+;;     active-agent in ctx
+;;   - assert :file-mounts AND :env land in ctx with the right
+;;     credential-id / variable binding
+;;   - assert backend-wiring's inline-docker argv carries the
+;;     `-v host:container:ro` flag
+;; ---------------------------------------------------------------------------
+
+(defn- find-with-credentials [ir]
+  (let [search (fn search [node]
+                 (cond
+                   (and (map? node)
+                        (= :jenkins/with-credentials (:type node)))
+                   node
+                   (map? node)       (some search (vals node))
+                   (sequential? node) (some search node)
+                   :else nil))]
+    (search ir)))
+
+(defn- capture-body-ctx
+  "Dispatch `wc-step` with `outer-ctx`, capturing the ctx that
+   h-with-credentials threads through to the body. The capture works by
+   redef'ing the private h-sh handler to snapshot ctx + return :ok
+   without subprocess work. wc-step's body must contain a single sh
+   step (we don't care about its script)."
+  [disp wc-step outer-ctx]
+  (let [captured (atom nil)
+        h-sh-var (resolve 'anvil.compat.jenkins.dispatcher/h-sh)]
+    (with-redefs-fn {h-sh-var (fn [_d _s ctx]
+                                (reset! captured ctx)
+                                {:status :ok :ctx ctx})}
+      #(d/dispatch disp wc-step outer-ctx))
+    @captured))
+
+(deftest translator-to-dispatcher-file-cred-end-to-end
+  (testing "real Groovy withCredentials([file(...)]) parsed → dispatched → ctx has :file-mounts + :env binding"
+    (let [tmp (java.io.File/createTempFile "anvil-e2e-gpg" ".asc")]
+      (try
+        (spit tmp "GPG KEY DATA")
+        (creds/add! {:id "jkube-gpg-key"
+                     :type :file
+                     :value (str tmp)
+                     :description "test gpg key"})
+        (let [jenkinsfile (str "pipeline {"
+                               "  agent { docker { image 'eclipse-temurin:21-jdk' } }"
+                               "  stages {"
+                               "    stage('s') {"
+                               "      steps {"
+                               "        withCredentials([file(credentialsId: 'jkube-gpg-key', "
+                               "                              variable: 'GPG_KEY_FILE')]) {"
+                               "          sh 'echo done'"
+                               "        }"
+                               "      }"
+                               "    }"
+                               "  }"
+                               "}")
+              ir (translator/parse jenkinsfile)
+              wc (find-with-credentials ir)]
+          (is (some? wc) "translator must emit a :jenkins/with-credentials node")
+          (is (= "file" (-> wc :credentials first :kind))
+              "translator must tag the credential as :kind \"file\"")
+          ;; Sanity-check the translator output shape — the regression
+          ;; this test catches is the dispatcher silently dropping
+          ;; the (vec-of-map) :raw-args shape.
+          (let [raw (-> wc :credentials first :raw-args)]
+            (is (vector? raw)
+                "translator emits :raw-args as a vector (not a string)")
+            (is (= "jkube-gpg-key" (-> raw first :credentialsId))
+                "translator preserves credentialsId verbatim from Groovy named arg")
+            (is (= "GPG_KEY_FILE" (-> raw first :variable))
+                "translator preserves variable verbatim from Groovy named arg"))
+          (let [disp (dispatcher/make)
+                outer-ctx {:env {} :cwd "/ws"
+                           :active-agent {:docker {:image "eclipse-temurin:21-jdk"}}}
+                inner-ctx (capture-body-ctx disp wc outer-ctx)]
+            (is (some? inner-ctx) "body must execute and snapshot ctx")
+            (is (seq (:file-mounts inner-ctx))
+                "ctx :file-mounts must be populated for the file credential")
+            (let [mount (first (:file-mounts inner-ctx))]
+              (is (= "jkube-gpg-key" (:credential-id mount)))
+              (is (= (str tmp)        (:host-path mount)))
+              (is (= "/anvil-creds/jkube-gpg-key" (:container-path mount)))
+              (is (= "GPG_KEY_FILE"  (:var-name mount))))
+            (is (= "/anvil-creds/jkube-gpg-key"
+                   (get-in inner-ctx [:env "GPG_KEY_FILE"]))
+                ":env binding must point at the container path under docker")))
+        (finally (.delete tmp))))))
+
+(deftest translator-to-dispatcher-non-docker-binds-host-path
+  (testing "without a docker active-agent the env var binds the HOST path (not /anvil-creds/...)"
+    (let [tmp (java.io.File/createTempFile "anvil-e2e-host" ".pem")]
+      (try
+        (spit tmp "CERT DATA")
+        (creds/add! {:id "host-cert" :type :file :value (str tmp) :description "x"})
+        (let [jenkinsfile (str "pipeline { agent any stages { stage('s') { steps {"
+                               "  withCredentials([file(credentialsId: 'host-cert', variable: 'TLS_CERT')]) {"
+                               "    sh 'true'"
+                               "  } } } } }")
+              wc (find-with-credentials (translator/parse jenkinsfile))
+              disp (dispatcher/make)
+              inner-ctx (capture-body-ctx disp wc {:env {} :cwd "/ws"})]
+          (is (= (str tmp) (get-in inner-ctx [:env "TLS_CERT"]))
+              "non-docker agent → env var binds host filesystem path"))
+        (finally (.delete tmp))))))
+
+;; ---------------------------------------------------------------------------
+;; backend-wiring inline-docker argv carries the -v ...:ro flag
+;;
+;; This is the bug PR #93 documented: chengis-core 0.3.0's DockerBackend
+;; ignores `:extra-args`, so the file-mount -v flags vanish between
+;; backend-for-ctx and `docker run`. The fix routes file-mount-bearing
+;; steps through `build-inline-docker-argv` which emits the flag
+;; directly.
+;; ---------------------------------------------------------------------------
+
+(deftest backend-wiring-inline-docker-includes-file-mount-flag
+  (testing "build-inline-docker-argv emits -v host:container:ro for each file-mount"
+    (let [argv (backend-wiring/build-inline-docker-argv
+                {:image "eclipse-temurin:21-jdk" :extra-args nil}
+                "/workspace"
+                "gpg --import \"$GPG_KEY_FILE\""
+                {"GPG_KEY_FILE" "/anvil-creds/jkube-gpg-key"}
+                [{:host-path "/host/keys/keyring.asc"
+                  :container-path "/anvil-creds/jkube-gpg-key"
+                  :credential-id "jkube-gpg-key"
+                  :var-name "GPG_KEY_FILE"}])]
+      (is (some #{"docker"} argv) "docker is the first executable")
+      (is (some #{"run"} argv))
+      (is (some #{"eclipse-temurin:21-jdk"} argv) "image is in argv")
+      (let [v-pairs (->> (partition 2 1 argv)
+                         (filter #(= "-v" (first %)))
+                         (mapv second))]
+        (is (some #(= "/host/keys/keyring.asc:/anvil-creds/jkube-gpg-key:ro" %) v-pairs)
+            "file mount -v flag is present with :ro suffix"))
+      (let [e-pairs (->> (partition 2 1 argv)
+                         (filter #(= "-e" (first %)))
+                         (mapv second))]
+        (is (some #(= "GPG_KEY_FILE=/anvil-creds/jkube-gpg-key" %) e-pairs)
+            "env binding makes it through as -e flag")))))
+
+(deftest backend-wiring-inline-docker-honors-cwd-workdir
+  (testing "build-inline-docker-argv -w honors workdir distinct from workspace (Jenkins dir())"
+    (let [argv (backend-wiring/build-inline-docker-argv
+                {:image "alpine:3" :extra-args nil}
+                "/workspace"        ; bind-mount root
+                "/workspace/subdir" ; workdir — set by dir('subdir')
+                "pwd"
+                {}
+                [])
+          w-flag-idx (.indexOf ^java.util.List argv "-w")
+          v-pairs (->> (partition 2 1 argv)
+                       (filter #(= "-v" (first %)))
+                       (mapv second))]
+      (is (pos? w-flag-idx) "-w flag is present")
+      (is (= "/workspace/subdir" (nth argv (inc w-flag-idx)))
+          "-w value is the workdir, not the workspace root")
+      (is (some #(= "/workspace:/workspace" %) v-pairs)
+          "bind mount still anchored at workspace root, not workdir")))
+  (testing "4-arity (no workdir) defaults -w to workspace for back-compat"
+    (let [argv (backend-wiring/build-inline-docker-argv
+                {:image "alpine:3" :extra-args nil}
+                "/workspace" "pwd" {} [])
+          w-flag-idx (.indexOf ^java.util.List argv "-w")]
+      (is (= "/workspace" (nth argv (inc w-flag-idx)))
+          "without workdir, -w falls back to workspace"))))
