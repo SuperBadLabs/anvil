@@ -117,8 +117,9 @@
    (format "/tmp/anvil-v041/artifacts/%s/1" name)])
 
 (defn- artifact-stats [host name]
-  ;; Workspace lives at /tmp/anvil-v041/target/anvil-builds/<job>/1
-  ;; or /tmp/anvil-v041/workspaces/<job>/1 — probe both.
+  ;; Workspace lives under /tmp/anvil-v041 — see stats-paths for the
+  ;; three locations we probe (workspaces, target/anvil-builds,
+  ;; artifacts), in `||` short-circuit order.
   ;;
   ;; The remote command MUST reach the remote shell with its inner
   ;; single quotes (`'*.jar'`, `'%s\n'`) intact. The original code
@@ -130,9 +131,9 @@
   ;; reported 0 jars when 425 jars / 252 MB were on disk).
   ;;
   ;; Fix: pass cmd-find as a single argv element to ssh. ssh already
-  ;; runs the remote command through the user's login shell, so we
-  ;; don't need an extra `bash -c` layer and the inner quotes are
-  ;; parsed once, correctly, on the remote side.
+  ;; runs the remote command through the user's configured shell in
+  ;; non-interactive mode (no `bash -c` layer needed), and the inner
+  ;; quotes are parsed once, correctly, on the remote side.
   (let [cmd-find (str/join " || "
                     (for [p (stats-paths name)]
                       (format "[ -d %s ] && find %s -type f -name '*.jar' -printf '%%s\\n' 2>/dev/null" p p)))
