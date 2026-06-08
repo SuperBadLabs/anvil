@@ -167,13 +167,15 @@
                 flat-stages (flatten-pipeline pipeline-ir)
                 flat {:stages (vec flat-stages)}
                 dispatcher (ad/make {:execute? execute?})
-                ;; AN5-2: probe every `@Library` coordinate against
-                ;; ANVIL_LIBRARIES_DIR and push :library-loaded /
-                ;; :library-unresolved effects so the AN5-1 classifier
-                ;; reads real evidence instead of synthesizing a
-                ;; "every library is unresolved" guess. No-op when the
-                ;; IR has no :libraries — the swap! never fires.
-                _ (libraries/load-into-effects! pipeline-ir (:effects dispatcher))
+                ;; AN5-2 + AN7-4: probe every `@Library` coordinate.
+                ;; AN7-4 extends AN5-2: tries Git resolution first
+                ;; (clones from :anvil.libs/remotes in anvil.edn, cached
+                ;; at ~/.anvil/libs/<name>/<ref>/) before falling back to
+                ;; the local ANVIL_LIBRARIES_DIR lookup. Pushes
+                ;; :library-loaded / :library-unresolved effects for the
+                ;; AN5-1 classifier. No-op when IR has no :libraries.
+                _ (libraries/load-with-remote-into-effects!
+                   pipeline-ir (:effects dispatcher))
                 stash-root (.getAbsolutePath
                             (io/file (.getParentFile workspace) "stashes"))
                 ctx {:dispatcher dispatcher

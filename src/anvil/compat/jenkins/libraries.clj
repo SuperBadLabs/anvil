@@ -273,3 +273,85 @@
              effects (mapv result->effect results)]
          (swap! effects-atom into effects)
          effects)))))
+
+;; ---------------------------------------------------------------------------
+;; AN7-4: remote-aware library loading
+;;
+;; load-into-effects! (AN5-2) assumes the library is already on disk at
+;; ANVIL_LIBRARIES_DIR/<name>/<ref>/. When that directory doesn't exist,
+;; it records :library-not-found. AN7-4 extends the path:
+;;
+;;   1. Ask `anvil.lib.resolver/resolve!` whether a remote URL is
+;;      configured for the library name.
+;;   2. If yes, clone (or use cache) so the directory exists, then
+;;      fall through to the existing load-library! registration.
+;;   3. If no remote is configured, fall back to the existing base-dir
+;;      lookup — operators who pre-seed libraries manually still work.
+;;
+;; The resolver is loaded lazily via `requiring-resolve` so that the
+;; libraries namespace doesn't hard-depend on git being available at
+;; class-load time (test suites that don't exercise remote resolution
+;; are unaffected).
+;; ---------------------------------------------------------------------------
+
+(defn- load-one-with-remote!
+  "AN7-4c: resolve (clone if needed) one library, then register its vars.
+   `base-dir` is the ANVIL_LIBRARIES_DIR fallback for pre-seeded libraries.
+   Returns a result map compatible with `result->effect`."
+  [base-dir name ref]
+  ;; 1. Ask the resolver for the local path, cloning if required.
+  (let [resolve! (requiring-resolve 'anvil.lib.resolver/resolve!)
+        res (resolve! name ref)]
+    (cond
+      ;; Resolver returned :ok — use the cloned/cached path.
+      (= :ok (:status res))
+      (assoc (load-library! (.getAbsolutePath (:path res)) name ref)
+             :name name :ref ref)
+
+      ;; Resolver returned :remote-not-configured — fall back to the
+      ;; local base-dir (operator pre-seeded the library manually).
+      (= :remote-not-configured (:reason res))
+      (assoc (load-library! base-dir name ref)
+             :name name :ref ref)
+
+      ;; Resolver returned a different error (git unavailable, clone failed).
+      ;; Surface it as :library-unresolved so the classifier sees it.
+      :else
+      {:status :error
+       :name   name
+       :ref    ref
+       :reason (:reason res)
+       :detail (:detail res)})))
+
+(defn load-with-remote-into-effects!
+  "AN7-4: Like `load-into-effects!` but tries remote Git resolution
+   (via `anvil.lib.resolver/resolve!`) for each library BEFORE falling
+   back to the local base-dir lookup.
+
+   Resolution priority:
+     1. `:anvil.libs/remotes` entry in anvil.edn → git clone to
+        `~/.anvil/libs/<name>/<ref>/` (cached per R7).
+     2. Pre-seeded local directory at `ANVIL_LIBRARIES_DIR/<name>/<ref>/`.
+     3. Neither → `:library-unresolved` effect.
+
+   Effects pushed are identical to `load-into-effects!` — the classifier
+   and reporter code doesn't need to change.
+
+   Called by the runner instead of `load-into-effects!` when the
+   :cost-reporting feature flag is on and the Jenkinsfile has
+   `:libraries`. Operators who never configure remote libraries see
+   no behavioral change."
+  ([pipeline-ir effects-atom]
+   (load-with-remote-into-effects!
+    pipeline-ir effects-atom
+    (or (System/getenv "ANVIL_LIBRARIES_DIR")
+        (str (System/getProperty "user.home") "/.anvil/libraries"))))
+  ([pipeline-ir effects-atom base-dir]
+   (let [libs (:libraries pipeline-ir)]
+     (when (seq libs)
+       (let [results (mapv (fn [{:keys [name version]}]
+                             (load-one-with-remote! base-dir name (or version "main")))
+                           libs)
+             effects (mapv result->effect results)]
+         (swap! effects-atom into effects)
+         effects)))))
