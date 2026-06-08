@@ -76,6 +76,16 @@
     ;; T0.2 — Load v0.3 feature flags from anvil.edn. Defaults closed;
     ;; per-feature flips enable T1–T7 routes/producers as tranches land.
     (features/load-flags!)
+    ;; v0.6 T4 — Hot-reload build-overrides on anvil.edn change. Best
+    ;; effort: no-op when anvil.edn is classpath-bundled (no filesystem
+    ;; path to watch). When live, an edit-and-save of anvil.edn clears
+    ;; the override cache; the next build sees the new shape without
+    ;; daemon restart. Never crashes boot — watcher failure falls back
+    ;; to v0.5.x restart-to-reload contract.
+    (try
+      ((requiring-resolve 'anvil.build-overrides/start-watcher!))
+      (catch Throwable t
+        (log/warn t "anvil.build-overrides: watcher start failed; falling back to restart-to-reload")))
     ;; T3.4 — GitHub Checks subscriber listens to :build-started /
     ;; :build-done on the bus and PATCHes the github check-run state.
     (when (features/enabled? :pr-checks)
