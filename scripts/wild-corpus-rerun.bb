@@ -6,8 +6,30 @@
 ;;
 ;; USAGE
 ;; -----
+;; Single-host (the original AN5-RERUN flow):
+;;
 ;;   ANVIL_URL=http://localhost:8765 \
 ;;     bb scripts/wild-corpus-rerun.bb [--subset N] [--max-minutes M]
+;;
+;; Fleet mode (v0.4.2 — CPU-weighted shard distribution):
+;;
+;;   bb scripts/wild-corpus-rerun.bb \
+;;     --fleet=http://heman:8765,http://mario:8765,http://luigi:8765 \
+;;     [--cycle=N]              ; rotates which host gets the heavyweights
+;;     [--max-minutes M]
+;;
+;;   Optional explicit per-host weight (overrides the daemon's reported
+;;   numExecutors, useful when a host is shared with other work). The
+;;   `@` separator stays unambiguous against URLs that already contain
+;;   colons (IPv6, basic-auth userinfo):
+;;     --fleet=http://heman:8765@4,http://mario:8765@2,http://luigi:8765@8
+;;
+;;   Without explicit weights, each daemon is queried for its
+;;   `numExecutors` (now sourced from :anvil.queue/workers /
+;;   ANVIL_WORKERS / max(2,cores/4) — see queue.clj) and jobs are
+;;   apportioned proportionally. The v0.4.1-T6 hand-coded 4/5/5 split
+;;   that saturated 12-core Mario while 56-core Luigi sat idle is
+;;   replaced by this dynamic apportionment.
 ;;
 ;; v0.4 AN6-6 — `--max-minutes M` (default 30) sets the harness cap
 ;; for the completion-poll loop. apache-hbase routinely needs 90+
@@ -17,29 +39,21 @@
 ;; this knob only controls how long the harness WAITS for the build
 ;; daemon to report completion.  See docs/dispatcher/long-builds.md.
 ;;
-;; The anvil instance must be running with `wild-corpus-agents.edn`
-;; loaded as its registry (see the file header for instructions).
+;; The anvil instance(s) must be running with `wild-corpus-agents.edn`
+;; loaded as registry (see the file header for instructions).
 ;;
 ;; OUTPUT
 ;; ------
 ;; Writes a markdown summary to /tmp/wild-corpus-rerun.md and prints
-;; the headline numbers to stdout:
-;;
-;;   wild-corpus rerun [date] — anvil <version>
-;;   Builds attempted:  N
-;;   Builds :success:   X
-;;   Builds :failure:   Y
-;;   Builds :unsupported: Z
-;;   Total artifact files on disk: K
-;;   Largest single artifact: M bytes (job=...)
-;;
-;; The /tmp/wild-corpus-rerun.md file has the per-build breakdown for
-;; pasting into a receipt or the v0.4 board.
+;; the headline numbers to stdout, including (in fleet mode) the
+;; per-host shard plan so the operator can sanity-check the split
+;; before kicking off a 4-hour run.
 
 (require '[babashka.http-client :as http]
          '[babashka.fs :as fs]
          '[cheshire.core :as json]
-         '[clojure.string :as str])
+         '[clojure.string :as str]
+         '[clojure.tools.cli :as cli])
 
 (def anvil-url (or (System/getenv "ANVIL_URL") "http://localhost:8765"))
 (def corpus-root (or (System/getenv "WILD_CORPUS_ROOT") "/tmp/anvil-broad"))
@@ -55,6 +69,12 @@
 ;; Without the flag, anvil v0.4.0 honestly classifies the build as
 ;; :unsupported :runtime-unsupported per the AN4-2 contract.
 ;;
+;; v0.4.2 fleet-mode marker: `:heavyweight? true` on builds known to
+;; dominate a host's load (long runtime + RAM-heavy JVM). Fleet mode
+;; rotates these across hosts each cycle so the same box doesn't keep
+;; absorbing every long-runner. Runtime estimates from prior cycles
+;; aren't reliable enough to pin to a specific host.
+;;
 ;; eclipse-mojarra stays excluded (k8s + YAML; needs the kubernetes
 ;; agent runtime which is v0.6 territory per the v0.4 board).
 (def dirty-dozen
@@ -63,9 +83,11 @@
    {:name "apache-camel-quarkus" :scm-url "https://github.com/apache/camel-quarkus.git" :branch "main"}
    {:name "apache-cassandra"     :scm-url "https://github.com/apache/cassandra.git" :branch "trunk"
     :requires-flag :dockerfile-agent
+    :heavyweight? true
     :notes "AN6-3 dockerfile-agent. Bump --max-minutes ≥ 60 for first cold-cache run."}
    {:name "apache-cxf"           :scm-url "https://github.com/apache/cxf.git" :branch "main"}
    {:name "apache-hbase"         :scm-url "https://github.com/apache/hbase.git" :branch "master"
+    :heavyweight? true
     :notes "Long-runner — bump --max-minutes ≥ 90 (AN6-6)."}
    {:name "apache-maven"         :scm-url "https://github.com/apache/maven.git" :branch "master"
     :notes "AN6-4: shared-lib mavenBuild step is :unsupported with workaround in docs/jenkins-compat/an6-4-mavenbuild-receipt.md"}
@@ -82,11 +104,11 @@
   (let [f (fs/file corpus-root name "Jenkinsfile")]
     (when (fs/exists? f) (slurp (fs/file f)))))
 
-(defn- register-job! [{:keys [name scm-url branch]}]
+(defn- register-job! [host {:keys [name scm-url branch]}]
   (let [body (json/encode {:name (str "wild-" name)
                            :jenkinsfile_source (jenkinsfile-for name)
                            :scm {:type "git" :url scm-url :branch branch}})
-        resp (http/post (str anvil-url "/anvil/admin/jobs")
+        resp (http/post (str host "/anvil/admin/jobs")
                         {:body body
                          :headers {"Content-Type" "application/json"}
                          :throw false})]
@@ -94,16 +116,16 @@
       (println "  ! register failed:" (:status resp) (str (:body resp))))
     (:status resp)))
 
-(defn- trigger-build! [name]
-  (let [resp (http/post (str anvil-url "/jenkins/job/wild-" name "/build")
+(defn- trigger-build! [host name]
+  (let [resp (http/post (str host "/jenkins/job/wild-" name "/build")
                         {:throw false})]
     (when (>= (:status resp) 400)
       (println "  ! trigger failed:" (:status resp)))
     (:status resp)))
 
-(defn- build-status [name n]
+(defn- build-status [host name n]
   (try
-    (let [resp (http/get (str anvil-url "/jenkins/job/wild-" name "/" n "/api/json")
+    (let [resp (http/get (str host "/jenkins/job/wild-" name "/" n "/api/json")
                          {:throw false})]
       (when (= 200 (:status resp))
         (json/decode (:body resp) true)))
@@ -112,6 +134,9 @@
 (defn- workspace-files-on-disk [name]
   ;; The runner writes builds under target/anvil-builds/<job>/<n>/
   ;; from anvil's cwd. We probe for the most-recent build dir.
+  ;; (In fleet mode, this only works for builds dispatched to the
+  ;; local box; remote hosts' artifacts get a zero count here.
+  ;; The fleet driver is responsible for aggregating remote receipts.)
   (let [job-dir (fs/file (System/getProperty "user.dir") "target" "anvil-builds"
                           (str "wild-" name))]
     (if (fs/exists? job-dir)
@@ -128,54 +153,231 @@
                vec)))
       [])))
 
-(defn -main [& args]
-  (let [subset (when-let [n (some #(when (re-find #"^--subset" %) %) args)]
-                 (Long/parseLong (last (str/split n #"="))))
-        targets (cond->> dirty-dozen
-                  subset (take subset))
-        _ (println "Registering" (count targets) "jobs against" anvil-url)
-        _ (doseq [t targets]
-            (printf "  → register %s ... " (:name t))
-            (let [s (register-job! t)] (println s)))
-        _ (println "Triggering builds...")
-        _ (doseq [t targets]
-            (printf "  → trigger %s ... " (:name t))
-            (let [s (trigger-build! (:name t))] (println s)))
-        ;; Wait for completion — each build has its own timeout.
-        ;; v0.4 AN6-6: the cap is configurable via --max-minutes so
-        ;; runs that include apache-hbase don't get clipped at the
-        ;; 30-min default before its first artifact lands.
-        max-minutes (or (some-> (System/getProperty "max-minutes") parse-long) 30)
-        _ (printf "Waiting for completion (poll every 30s, max %d min)...\n" max-minutes)
-        completed (atom #{})
-        max-iterations (* 2 max-minutes)  ; 30s polls per minute
-        results (loop [iter 0]
-                  (if (or (= (count @completed) (count targets))
-                          (>= iter max-iterations))
-                    (mapv (fn [{:keys [name]}]
-                            (let [s (build-status name 1)]
-                              {:name name
-                               :result (:result s)
-                               :building? (:building s)
-                               :duration-ms (:duration s)}))
-                          targets)
-                    (do (Thread/sleep 30000)
-                        (doseq [{:keys [name]} targets]
-                          (let [s (build-status name 1)]
-                            (when (and s (not (:building s)) (:result s))
-                              (swap! completed conj name))))
-                        (printf "  [%d/%d done]\n"
-                                (count @completed) (count targets))
-                        (flush)
-                        (recur (inc iter)))))
-        artifacts-per-build (into {} (for [{:keys [name]} targets]
-                                       [name (workspace-files-on-disk name)]))
-        ;; Headline numbers
-        success-count (count (filter #(= "SUCCESS" (:result %)) results))
+;; ---------------------------------------------------------------------------
+;; v0.4.2 — fleet-mode shard planning
+;; ---------------------------------------------------------------------------
+
+(defn- query-num-executors
+  "Ask a daemon for its numExecutors via /jenkins/api/json. Returns
+   the int, or nil if the host is unreachable or doesn't expose it.
+
+   In v0.4.2 the daemon reports its actual worker pool size here
+   (sourced from :anvil.queue/workers / ANVIL_WORKERS / cores/4) —
+   before that fix every daemon hardcoded 2 regardless of capacity."
+  [host]
+  (try
+    (let [resp (http/get (str host "/jenkins/api/json") {:throw false})]
+      (when (= 200 (:status resp))
+        (some-> (json/decode (:body resp) true) :numExecutors)))
+    (catch Exception _ nil)))
+
+(defn- parse-fleet-arg
+  "Parse `--fleet=URL[@weight],URL[@weight],...` into a vector of
+   `{:host URL :weight INT-or-nil}`. Weight is optional; if missing,
+   the caller will query the daemon for numExecutors.
+
+   The `@` separator (not `:`) is deliberate so that URLs with
+   embedded colons (IPv6 literals `http://[::1]:8765`, basic-auth
+   userinfo `http://u:p@h:8765`) parse unambiguously. Weight must be
+   a positive integer — `@0` and negatives throw with the offending
+   token so an operator typo fails loud at boot rather than silently
+   dropping a host or zeroing the apportionment denominator."
+  [s]
+  (mapv (fn [entry]
+          (let [at (.indexOf entry "@")]
+            (if (neg? at)
+              {:host entry :weight nil}
+              (let [host (subs entry 0 at)
+                    w-str (subs entry (inc at))
+                    w (parse-long w-str)]
+                (when-not (and w (pos? w))
+                  (throw (ex-info (str "fleet entry " entry
+                                       ": weight must be a positive integer, got "
+                                       (pr-str w-str))
+                                  {:entry entry :weight w-str})))
+                {:host host :weight w}))))
+        (str/split s #",")))
+
+(defn- resolve-weights
+  "Fill in unspecified per-host weights by querying each daemon's
+   numExecutors. A host that fails both an explicit weight AND the
+   query falls back to weight=1 (any positive weight beats dropping
+   the host; the operator gets a printed warning)."
+  [fleet]
+  (mapv (fn [{:keys [host weight] :as h}]
+          (cond
+            weight h
+            :else (let [n (query-num-executors host)]
+                    (when-not n
+                      (println "  ! could not query" host
+                               "for numExecutors — defaulting weight=1"))
+                    (assoc h :weight (or n 1)))))
+        fleet))
+
+(defn- largest-remainder-apportionment
+  "Hamilton's method: distribute `total` slots across hosts in
+   proportion to their `:weight`. Returns the hosts with `:capacity`
+   filled in. Guarantees the capacities sum to `total` exactly (the
+   reason for largest-remainder vs. naive rounding: a 4/5/5 split
+   over 14 jobs with simple `floor(weight/sum*total)` strands one
+   job nowhere)."
+  [hosts total]
+  (let [sum-w (apply + (map :weight hosts))
+        raw (mapv (fn [h]
+                    (let [exact (* total (/ (:weight h) (double sum-w)))
+                          floor (long exact)]
+                      (assoc h :floor floor :frac (- exact floor))))
+                  hosts)
+        assigned-floor (apply + (map :floor raw))
+        leftover (- total assigned-floor)
+        ;; Distribute the `leftover` extra slots to the hosts with the
+        ;; largest fractional remainders.
+        ranked (->> raw
+                    (map-indexed (fn [i h] (assoc h :idx i)))
+                    (sort-by (juxt (comp - :frac) :idx)))
+        winners (set (map :idx (take leftover ranked)))]
+    (->> raw
+         (map-indexed (fn [i h]
+                        (assoc h :capacity (+ (:floor h)
+                                              (if (winners i) 1 0)))))
+         (mapv #(dissoc % :floor :frac)))))
+
+(defn- plan-shards
+  "Given a resolved fleet (hosts with weights), the corpus targets,
+   and a cycle number, return `[{:host URL :weight W :jobs [...]} …]`.
+
+   Algorithm:
+     1. Apportion total job slots across hosts via Hamilton's method
+        proportional to weight.
+     2. Pull out heavyweight jobs (`:heavyweight? true`) and assign
+        them round-robin starting at host `(cycle mod num-hosts)` so
+        no single host eats the same long-runner every cycle. A host
+        receives a heavyweight only if its remaining capacity > 0.
+     3. Fill the remaining capacity with non-heavyweight jobs, also
+        weight-proportional via Hamilton on the leftover counts.
+
+   This replaces the v0.4.1-T6 hand-coded 4/5/5 split that hit Mario
+   (12c) with 5 jobs including 2 mavens — load avg 28 on 12 cores."
+  [fleet targets cycle]
+  (let [hosts (largest-remainder-apportionment fleet (count targets))
+        host-vec (mapv (fn [h] (assoc h :jobs [] :remaining (:capacity h))) hosts)
+        n-hosts (count host-vec)
+        heavies (filter :heavyweight? targets)
+        non-heavies (remove :heavyweight? targets)
+        ;; Rotate heavies: start at the cycle-offset host, walk forward
+        ;; until we find one with remaining > 0, drop the job there.
+        assigned (reduce (fn [hosts [i target]]
+                           (let [start (mod (+ cycle i) n-hosts)
+                                 pick (some (fn [step]
+                                              (let [idx (mod (+ start step) n-hosts)]
+                                                (when (pos? (:remaining (nth hosts idx)))
+                                                  idx)))
+                                            (range n-hosts))]
+                             (if pick
+                               (-> hosts
+                                   (update-in [pick :jobs] conj target)
+                                   (update-in [pick :remaining] dec))
+                               hosts)))                  ; no slot? drop silently — won't happen unless total<heavies
+                         host-vec
+                         (map-indexed vector heavies))
+        ;; Now apportion the non-heavies among hosts with leftover
+        ;; capacity. We re-run Hamilton's on (remaining)-weighted hosts.
+        ;; This is conservative: a host that ate all its capacity on a
+        ;; heavyweight gets no further jobs this cycle (correct — its
+        ;; numExecutors is already accounted for).
+        leftover-targets (vec non-heavies)
+        leftover-fleet (mapv (fn [h] (assoc h :weight (:remaining h)))
+                             (filter #(pos? (:remaining %)) assigned))
+        leftover-plan (largest-remainder-apportionment leftover-fleet (count leftover-targets))
+        ;; Walk through non-heavies, dropping each into the next host
+        ;; that still has unassigned leftover-capacity.
+        host->extra (zipmap (map :host leftover-plan)
+                            (map :capacity leftover-plan))
+        final (loop [hosts assigned
+                     [t & rest] leftover-targets]
+                (if-not t
+                  hosts
+                  (let [pick (some (fn [i]
+                                     (let [h (nth hosts i)
+                                           need (host->extra (:host h) 0)
+                                           used (- (count (:jobs h))
+                                                   (count (filter :heavyweight? (:jobs h))))]
+                                       (when (< used need) i)))
+                                   (range (count hosts)))]
+                    (recur (if pick
+                             (update-in hosts [pick :jobs] conj t)
+                             hosts)
+                           rest))))]
+    (mapv #(select-keys % [:host :weight :capacity :jobs]) final)))
+
+(defn- print-shard-plan! [plan]
+  (println)
+  (println "  Shard plan:")
+  (doseq [{:keys [host weight capacity jobs]} plan]
+    (printf "    %-40s w=%-3d cap=%-3d (%d job%s)\n"
+            host weight capacity (count jobs) (if (= 1 (count jobs)) "" "s"))
+    (doseq [j jobs]
+      (printf "      - %s%s\n" (:name j) (if (:heavyweight? j) " [heavyweight]" ""))))
+  (println))
+
+;; ---------------------------------------------------------------------------
+;; Run helpers — operate against a single host
+;; ---------------------------------------------------------------------------
+
+(defn- run-on-host!
+  "Register + trigger every job in `targets` against `host`.
+   Returns nothing; the polling phase queries each host for status."
+  [host targets]
+  (println "Registering" (count targets) "jobs against" host)
+  (doseq [t targets]
+    (printf "  → register %s @ %s ... " (:name t) host)
+    (let [s (register-job! host t)] (println s)))
+  (println "Triggering builds @" host)
+  (doseq [t targets]
+    (printf "  → trigger %s @ %s ... " (:name t) host)
+    (let [s (trigger-build! host (:name t))] (println s))))
+
+(defn- poll-all
+  "Poll all `assignments` ({:host :name} pairs) until every build
+   reports a non-building status OR the iteration cap is reached.
+   Returns a vector of {:name :host :result :building? :duration-ms}."
+  [assignments max-minutes]
+  (printf "Waiting for completion (poll every 30s, max %d min)...\n" max-minutes)
+  (let [completed (atom #{})
+        max-iterations (* 2 max-minutes)]
+    (loop [iter 0]
+      (if (or (= (count @completed) (count assignments))
+              (>= iter max-iterations))
+        (mapv (fn [{:keys [host name]}]
+                (let [s (build-status host name 1)]
+                  {:name name
+                   :host host
+                   :result (:result s)
+                   :building? (:building s)
+                   :duration-ms (:duration s)}))
+              assignments)
+        (do (Thread/sleep 30000)
+            (doseq [{:keys [host name]} assignments]
+              (let [s (build-status host name 1)]
+                (when (and s (not (:building s)) (:result s))
+                  (swap! completed conj name))))
+            (printf "  [%d/%d done]\n"
+                    (count @completed) (count assignments))
+            (flush)
+            (recur (inc iter)))))))
+
+;; ---------------------------------------------------------------------------
+;; Receipt rendering
+;; ---------------------------------------------------------------------------
+
+(defn- print-summary!
+  [targets results artifacts-per-build & {:keys [fleet-plan]}]
+  (let [success-count (count (filter #(= "SUCCESS" (:result %)) results))
         failure-count (count (filter #(= "FAILURE" (:result %)) results))
         unsupported-count (count (filter #(= "NOT_BUILT" (:result %)) results))
         total-artifact-files (apply + (map count (vals artifacts-per-build)))
-        largest (apply max-key :size (mapcat val artifacts-per-build))]
+        largest (when (seq (mapcat val artifacts-per-build))
+                  (apply max-key :size (mapcat val artifacts-per-build)))]
 
     (println)
     (println "================================================================")
@@ -188,12 +390,28 @@
     (printf  "  Total artifact files on disk:  %d\n" total-artifact-files)
     (when largest
       (printf "  Largest artifact:    %d bytes (%s)\n" (:size largest) (:path largest)))
+    (when fleet-plan
+      (println)
+      (println "  Per-host load:")
+      (doseq [{:keys [host capacity jobs]} fleet-plan]
+        (let [host-results (filter #(= host (:host %)) results)]
+          (printf "    %-40s cap=%-3d ran=%-3d ok=%-3d fail=%-3d\n"
+                  host capacity (count jobs)
+                  (count (filter #(= "SUCCESS" (:result %)) host-results))
+                  (count (filter #(= "FAILURE" (:result %)) host-results))))))
     (println "================================================================")
 
-    ;; Write markdown receipt for pasting
     (spit "/tmp/wild-corpus-rerun.md"
           (str "# wild-corpus rerun receipt\n\n"
                "Date: TODO (the script can't call Date.now here)\n\n"
+               (when fleet-plan
+                 (str "## Fleet plan\n\n"
+                      "| Host | Weight | Capacity | Jobs |\n|---|---|---|---|\n"
+                      (str/join "\n"
+                                (for [{:keys [host weight capacity jobs]} fleet-plan]
+                                  (str "| " host " | " weight " | " capacity " | "
+                                       (str/join ", " (map :name jobs)) " |")))
+                      "\n\n"))
                "## Headline\n\n"
                "| | Count |\n|---|---|\n"
                "| Builds attempted | " (count targets) " |\n"
@@ -202,15 +420,69 @@
                "| :unsupported | " unsupported-count " |\n"
                "| Artifact files on disk | " total-artifact-files " |\n\n"
                "## Per-build breakdown\n\n"
-               "| Build | Result | Artifact files | Largest (bytes) |\n"
-               "|---|---|---|---|\n"
+               "| Build | Host | Result | Artifact files | Largest (bytes) |\n"
+               "|---|---|---|---|---|\n"
                (str/join "\n"
                          (for [r results
                                :let [arts (get artifacts-per-build (:name r))]]
                            (str "| " (:name r) " | "
+                                (or (:host r) "—") " | "
                                 (or (:result r) "?") " | "
                                 (count arts) " | "
                                 (or (some-> arts first :size str) "—") " |")))))
     (println "Receipt written to /tmp/wild-corpus-rerun.md")))
+
+;; ---------------------------------------------------------------------------
+;; CLI
+;; ---------------------------------------------------------------------------
+
+(def cli-spec
+  [["-s" "--subset N" "Run only the first N corpus entries"
+    :parse-fn parse-long]
+   ["-m" "--max-minutes M" "Max minutes to wait for completion"
+    :parse-fn parse-long :default 30]
+   ["-f" "--fleet URLS" "Comma-separated daemon URLs (with optional :weight). Triggers fleet mode."]
+   ["-c" "--cycle N" "Rotation cycle number for heavyweight assignment (default 0)"
+    :parse-fn parse-long :default 0]
+   [nil "--plan-only" "Print the shard plan and exit without registering/triggering"]])
+
+(defn -main [& args]
+  (let [{:keys [options summary errors]} (cli/parse-opts args cli-spec)
+        _ (when (seq errors) (run! println errors) (System/exit 2))
+        {:keys [subset max-minutes fleet cycle plan-only]} options
+        targets (cond->> dirty-dozen
+                  subset (take subset))]
+    (if fleet
+      ;; ----- Fleet mode -----
+      (let [parsed (parse-fleet-arg fleet)
+            resolved (resolve-weights parsed)
+            plan (plan-shards resolved targets cycle)
+            assignments (vec (for [{:keys [host jobs]} plan
+                                   j jobs]
+                               {:host host :name (:name j)}))]
+        (println "Fleet:" (count resolved) "hosts; targets:" (count targets)
+                 "; cycle:" cycle)
+        (print-shard-plan! plan)
+        (when plan-only
+          (println "[--plan-only] exiting without dispatch.")
+          (System/exit 0))
+        ;; Dispatch sequentially per host (register+trigger is fast;
+        ;; the long wait is the polling loop below which IS concurrent
+        ;; across hosts).
+        (doseq [{:keys [host jobs]} plan
+                :when (seq jobs)]
+          (run-on-host! host jobs))
+        (let [results (poll-all assignments max-minutes)
+              artifacts-per-build (into {} (for [{:keys [name]} targets]
+                                             [name (workspace-files-on-disk name)]))]
+          (print-summary! targets results artifacts-per-build :fleet-plan plan)))
+      ;; ----- Single-host mode (original AN5-RERUN flow) -----
+      (do
+        (run-on-host! anvil-url targets)
+        (let [assignments (mapv (fn [{:keys [name]}] {:host anvil-url :name name}) targets)
+              results (poll-all assignments max-minutes)
+              artifacts-per-build (into {} (for [{:keys [name]} targets]
+                                             [name (workspace-files-on-disk name)]))]
+          (print-summary! targets results artifacts-per-build))))))
 
 (apply -main *command-line-args*)

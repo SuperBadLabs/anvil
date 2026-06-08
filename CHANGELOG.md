@@ -1,5 +1,33 @@
 # anvil — changelog
 
+## Unreleased — 0.4.2 / 0.5 fleet-balance polish
+
+Follow-up from the v0.4.1-T6 wild-corpus fleet rerun (2026-06-08), where
+a 3-host fleet (HeMan 32c, Mario 12c, Luigi 56c) ran imbalanced:
+hardcoded `numExecutors=2` per daemon plus a hand-coded 4/5/5 corpus
+split saturated 12-core Mario at load 28 while 56-core Luigi sat at
+0.4. Two fixes ship together:
+
+- **Daemon worker pool is now sized to the host.** `queue/default-worker-count`
+  returns `max(2, cores/4)`; the boot resolver picks the count from
+  (in precedence) `ANVIL_WORKERS` env, `:anvil.queue/workers` in
+  `anvil.edn`, or the default. The startup log line tells operators
+  which source won, plus the host core count. The Jenkins shim's
+  `/jenkins/api/json` `numExecutors` field now mirrors the actual
+  pool size instead of always reporting 2 — fleet drivers can use
+  it as a shard weight.
+- **CPU-weighted shard distribution + heavyweight rotation in
+  `scripts/wild-corpus-rerun.bb`.** New `--fleet=URL1,URL2,...`
+  mode queries each daemon's `numExecutors`, apportions the corpus
+  via Hamilton's largest-remainder method, and rotates the
+  heavyweight builds (apache-hbase, apache-cassandra) across hosts
+  by `--cycle=N`. Optional per-host weight override
+  (`--fleet=URL:weight,...`) for hosts shared with other work.
+  `--plan-only` prints the shard plan without dispatching, for
+  sanity-checking before a multi-hour rerun. Single-host invocation
+  (`ANVIL_URL=…`) unchanged. Runbook updated:
+  [docs/jenkins-compat/AN5-RERUN-runbook.md](docs/jenkins-compat/AN5-RERUN-runbook.md).
+
 ## 0.4.0 — Leapfrog + Honesty Release (2026-06-07)
 
 The release the v0.4 board promised — though scoped honestly: of the

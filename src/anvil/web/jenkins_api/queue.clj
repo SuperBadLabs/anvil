@@ -39,6 +39,23 @@
          :run-fn nil
          :stopping? false}))
 
+(defn default-worker-count
+  "Recommended worker count for this host: max(2, cores/4).
+
+   Rationale: the v0.4.1-T6 wild-corpus fleet rerun saturated a 12-core
+   Mario at the hardcoded `2` (each maven build pulls 8–12 threads of
+   its own; two concurrent = ~24 threads competing for 12 cores, load
+   avg 28). Meanwhile a 56-core Luigi sat at load 0.4 with the same 2
+   workers — utterly wasted capacity. Scaling at cores/4 lands Mario at
+   3, HeMan 32c at 8, Luigi 56c at 14 — leaves headroom for the maven
+   JVM thread pools each build spawns without going onto the swap.
+
+   This is the pure CPU-derived default. The boot-time resolver in
+   `anvil.core/resolve-worker-count` layers `ANVIL_WORKERS` (env) and
+   `:anvil.queue/workers` (anvil.edn) on top of it."
+  []
+  (max 2 (long (quot (.availableProcessors (Runtime/getRuntime)) 4))))
+
 (defn- mk-thread-factory [^String name-prefix]
   (let [counter (AtomicLong. 0)]
     (reify ThreadFactory

@@ -41,6 +41,16 @@
 ;; Pure-data queue mechanics
 ;; ---------------------------------------------------------------------------
 
+(deftest default-worker-count-test
+  (testing "default-worker-count is at least 2 and scales with available cores"
+    (let [n (queue/default-worker-count)
+          cores (.availableProcessors (Runtime/getRuntime))]
+      (is (>= n 2) "floor of 2 so 1- and 2-core hosts still concurrent")
+      ;; On any host with >=8 cores, default should be cores/4 not the floor —
+      ;; that's the whole point of v0.4.2 (a 12-core host on `2` saturates).
+      (when (>= cores 8)
+        (is (= (long (quot cores 4)) n))))))
+
 (deftest enqueue-returns-monotonic-ids-test
   (testing "enqueue! returns increasing queue ids"
     (jobs/register-job!
