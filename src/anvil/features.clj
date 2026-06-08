@@ -253,6 +253,12 @@
    more honored shapes on the enabled side). Listed here, the flag
    defaults to true *unless* anvil.edn explicitly sets it false.
 
+   Per AV6-7 — flags gate routes only during in-progress; defaults
+   flip to on with the tranche-closing commit. Adding a feature
+   here is the closing-commit pattern for a tranche; removing it
+   (when the feature graduates fully) is the safe path to also
+   remove the flag from `known-features` in a later release.
+
    Closed-by-default remains the rule for features that change
    observable behavior for existing builds — those stay off until
    the operator opts in.
@@ -261,6 +267,12 @@
      :dockerfile-multistage — v0.6 T3. Single-stage builds (no
        `:target` in the IR) hash identically to v0.4 AN6-3, so
        flipping default-on never changes a single-stage image tag.
+     :k8s-agent — v0.6 T1. Kubernetes agent runtime. Operators on
+       hosts without a reachable k8s cluster set
+       `{:anvil.features/k8s-agent false}` in anvil.edn to opt out;
+       the dispatcher then degrades `agent { kubernetes { … } }` to
+       :unsupported honestly instead of trying (and failing) to
+       reach the cluster.
      :vault-backend     — v0.6 T2. install! refuses to take over
                           without operator config; without
                           :anvil.vault/url + :token-path in
@@ -270,7 +282,7 @@
      :cloud-kms-backend — v0.6 T2. Same posture as :vault-backend
                           — install! no-ops without :anvil.kms
                           config; local-disk stays active."
-  #{:dockerfile-multistage :vault-backend :cloud-kms-backend})
+  #{:dockerfile-multistage :k8s-agent :vault-backend :cloud-kms-backend})
 
 (def ^:private flag-ns "anvil.features")
 
@@ -282,6 +294,13 @@
 
 (defonce ^:private state (atom {}))
 
+(defn- default-value
+  "Default state for a feature when anvil.edn doesn't mention it.
+   Features in `default-on-features` default to `true`; everything
+   else defaults to `false` (the conservative pre-tranche state)."
+  [feature]
+  (contains? default-on-features feature))
+
 (defn load-flags!
   "Read `anvil.edn` via `anvil.config/load-edn` and snapshot the flag
    values into the in-process registry. Idempotent — re-calling
@@ -289,13 +308,14 @@
 
    Unknown flags in the file are ignored (forward-compat). For flags
    missing from anvil.edn, the per-flag default applies:
-   `default-on-features` membership → true; otherwise → false."
+   `default-on-features` membership → true; otherwise → false (see
+   `default-on-features` for the set of features that default to
+   `true` once their tranche has shipped per AV6-7)."
   []
   (let [edn (config/load-edn "anvil" {})
         flags (into {}
                     (for [f known-features]
-                      [f (boolean (get edn (flag-keyword f)
-                                       (contains? default-on-features f)))]))
+                      [f (boolean (get edn (flag-keyword f) (default-value f)))]))
         on (filter #(get flags %) known-features)]
     (reset! state flags)
     (log/info (str "anvil.features: "

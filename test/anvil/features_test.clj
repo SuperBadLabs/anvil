@@ -186,6 +186,19 @@
   (testing "querying an unregistered feature is safe — returns false"
     (is (false? (features/enabled? :leapfrog-thing-from-v0.4)))))
 
+(deftest k8s-agent-defaults-on-after-v0-6-t1
+  ;; AV6-7 — flags gate routes during in-progress; defaults flip to
+  ;; on with the tranche-closing commit. The :k8s-agent flag flipped
+  ;; on when anvil v0.6 T1 shipped, so `default-on-features` includes
+  ;; it. Operators can still set false in anvil.edn to opt out.
+  (testing ":k8s-agent is in default-on-features"
+    (is (contains? features/default-on-features :k8s-agent)))
+  (testing "load-flags! with empty anvil.edn returns true for :k8s-agent"
+    ;; Reload to honor defaults; the dev anvil.edn doesn't override.
+    (let [flags (features/load-flags!)]
+      (is (true? (get flags :k8s-agent))
+          "after v0.6 T1 ships, an empty anvil.edn must default :k8s-agent on"))))
+
 (deftest set!-flips-state
   (features/set! :junit true)
   (is (true? (features/enabled? :junit)))

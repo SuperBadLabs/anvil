@@ -11,6 +11,7 @@
             [clojure.java.shell :as sh]
             [chengis.engine.backend :as backend]
             [chengis.engine.backend.docker :as docker]
+            [chengis.engine.backend.k8s :as k8s]
             [anvil.config :as config]
             [anvil.build-overrides :as bo]
             [anvil.compat.jenkins.backend-wiring :as bw]))
@@ -125,6 +126,41 @@
       (is (= {:memory-mb 2048} (-> b :config :resource-limits)))
       (is (= "--network host -u root" (-> b :config :extra-args))
           "non-resource flags remain in extra-args"))))
+
+;; ---------------------------------------------------------------------------
+;; v0.6 T1 — kubernetes active-agent → K8sBackend
+;; ---------------------------------------------------------------------------
+
+(deftest backend-for-ctx-returns-k8s-for-kubernetes-active-agent
+  (testing "active-agent with :kubernetes {:image …} → K8sBackend"
+    (let [b (bw/backend-for-ctx {:active-agent
+                                  {:kubernetes {:image "eclipse-temurin:21"
+                                                :raw-form :yaml}}})]
+      (is (instance? chengis.engine.backend.k8s.K8sBackend b))
+      (is (= "kubernetes:default/eclipse-temurin:21" (backend/backend-name b))))))
+
+(deftest backend-for-ctx-passes-namespace-through
+  (testing "namespace from yaml extraction reaches the backend config"
+    (let [b (bw/backend-for-ctx {:active-agent
+                                  {:kubernetes {:image "busybox:1.36"
+                                                :namespace "builds"
+                                                :raw-form :yaml}}})]
+      (is (= "builds" (-> b :config :namespace))))))
+
+(deftest backend-for-ctx-passes-resource-limits-through
+  (testing "resource-limits from yaml extraction reach the backend config"
+    (let [b (bw/backend-for-ctx {:active-agent
+                                  {:kubernetes {:image "busybox:1.36"
+                                                :resource-limits {:memory-mb 2048 :cpus 1.5}
+                                                :raw-form :yaml}}})]
+      (is (= {:memory-mb 2048 :cpus 1.5} (-> b :config :resource-limits))))))
+
+(deftest backend-for-ctx-prefers-k8s-when-no-image-falls-back
+  (testing "kubernetes IR without :image → falls through to LocalShell (no pod can launch)"
+    (let [b (bw/backend-for-ctx {:active-agent
+                                  {:kubernetes {:raw-form :unknown}}})]
+      (is (= "local-shell" (backend/backend-name b))
+          "no image in k8s spec → fall through, not crash"))))
 
 (deftest backend-for-ctx-no-resource-limits-key-when-empty
   (testing "no resource flags → :resource-limits key absent"

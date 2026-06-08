@@ -1593,6 +1593,24 @@
     ((requiring-resolve 'anvil.features/enabled?) :dockerfile-agent)
     (catch Throwable _ false)))
 
+(defn- k8s-agent-feature-on? []
+  (try
+    ((requiring-resolve 'anvil.features/enabled?) :k8s-agent)
+    (catch Throwable _ false)))
+
+(defn- k8s-spec-honorable?
+  "True iff a parsed `{:kubernetes {…}}` agent spec carries enough info
+   for the K8sBackend to actually launch a pod — currently: the
+   :k8s-agent feature flag is on AND the spec has an :image. Without
+   an image, T1.3's yaml regex extractor (or T1.4's containerTemplate)
+   didn't find a launchable shape, so we degrade honestly."
+  [agent-spec]
+  (and (map? agent-spec)
+       (:kubernetes agent-spec)
+       (k8s-agent-feature-on?)
+       (string? (-> agent-spec :kubernetes :image))
+       (not (clojure.string/blank? (-> agent-spec :kubernetes :image)))))
+
 (defn- dockerfile-multistage-feature-on?
   "v0.6 T3 — the :anvil.features/dockerfile-multistage flag gates
    `--target` forwarding + the matching cache-key extension. When off,
@@ -1633,26 +1651,31 @@
    in the current mode, or nil when the agent is honored.
 
    Today's honor table:
-     mode             | docker        | dockerfile               | kubernetes
-     -----------------+---------------+--------------------------+-------------
-     :execute? true   | honored       | honored if flag on (AN6-3) | UNHONORED
-     :execute? false  | UNHONORED     | UNHONORED                | UNHONORED
+     mode             | docker      | dockerfile               | kubernetes
+     -----------------+-------------+--------------------------+--------------------------
+     :execute? true   | honored     | honored if flag on (AN6-3) | honored if flag on +
+                     |             |                          | image extractable (v0.6 T1)
+     :execute? false  | UNHONORED   | UNHONORED                | UNHONORED
 
    Rationale: in record-only mode every container agent is bypassed by
    construction (the dispatcher records shell calls without forking
    subprocesses). In execute mode, `agent { docker }` runs via
    `build-docker-args` against the host `docker` CLI — so it's honored.
    `dockerfile` is honored when the v0.4 AN6-3 flag is on AND we're in
-   execute mode (the build needs a real docker daemon to materialize
-   the image). `kubernetes` has no runtime in anvil today; emitting
-   `:agent/degraded` for it is the AN4-1-style honesty signal that
-   tells the classifier these were silently skipped."
+   execute mode. `kubernetes` is honored when the v0.6 T1 :k8s-agent
+   flag is on AND the parsed IR carries an image. Anything not honored
+   emits `:agent/degraded`, which the AN4-1 classifier consumes as
+   :unsupported."
   [d agent-spec]
   (let [execute? (:execute? d)]
     (cond
       (and (map? agent-spec) (:dockerfile agent-spec)
            (not (and execute? (dockerfile-agent-feature-on?))))  :dockerfile
+      ;; Legacy shape (pre-T1): `{:type :kubernetes :raw ...}`. Kept
+      ;; for back-compat with any caller emitting the old IR.
       (and (map? agent-spec) (= :kubernetes (:type agent-spec))) :kubernetes
+      (and (map? agent-spec) (:kubernetes agent-spec)
+           (not (and execute? (k8s-spec-honorable? agent-spec)))) :kubernetes
       (and (map? agent-spec) (:docker agent-spec)
            (not execute?))                                :docker
       :else nil)))

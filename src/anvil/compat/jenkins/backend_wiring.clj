@@ -42,6 +42,8 @@
             [clojure.string :as str]
             [chengis.engine.backend :as backend]
             [chengis.engine.backend.docker :as docker]
+            [chengis.engine.backend.k8s :as k8s]
+            [anvil.config :as config]
             [taoensso.timbre :as log]
             [anvil.build-overrides :as build-overrides]))
 
@@ -56,6 +58,41 @@
   (when (and (map? active-agent) (:docker active-agent))
     {:image      (-> active-agent :docker :image)
      :extra-args (-> active-agent :docker :args)}))
+
+(defn- k8s-agent-spec
+  "Extract a k8s `{:image :namespace :resource-limits}` spec from a
+   Jenkins-shape active-agent map. Returns nil when the active-agent
+   isn't kubernetes-shaped or when no image is extractable (i.e. the
+   translator couldn't pull one from the yaml/containerTemplate)."
+  [active-agent]
+  (when (and (map? active-agent) (:kubernetes active-agent)
+             (string? (-> active-agent :kubernetes :image))
+             (not (str/blank? (-> active-agent :kubernetes :image))))
+    (let [k (:kubernetes active-agent)]
+      (cond-> {:image (:image k)}
+        (:namespace k)       (assoc :namespace (:namespace k))
+        (:resource-limits k) (assoc :resource-limits (:resource-limits k))))))
+
+;; anvil.config/load-edn is documented as "read once" (no hot-reload —
+;; restart the process to pick up an edit, matching anvil.config's
+;; stance). Cache the resolved kubeconfig override for the process
+;; lifetime so a k8s-heavy pipeline doesn't re-read anvil.edn from
+;; disk per step (PR #104 Copilot review).
+(def ^:private kubeconfig-override-cache
+  (delay
+    (try
+      (-> (config/load-edn "anvil" {})
+          :anvil.k8s/kubeconfig-path)
+      (catch Throwable _ nil))))
+
+(defn- k8s-kubeconfig-override
+  "Resolve the operator's kubeconfig override from anvil.edn (the v0.6
+   T1.5 `:anvil.k8s/kubeconfig-path` key). Returns nil when no override
+   is set, in which case the K8sBackend falls back to KUBECONFIG env →
+   ~/.kube/config. Memoized per JVM lifetime — restart to pick up an
+   anvil.edn edit (matches anvil.config's read-once stance)."
+  []
+  @kubeconfig-override-cache)
 
 (defn- file-mounts->extra-args
   "Convert AN7-3 file-mount specs [{:host-path :container-path …}] into
@@ -187,27 +224,52 @@
 
    Returns a record implementing the `ExecutionBackend` protocol."
   [ctx]
-  (if-let [docker-spec (docker-agent-spec (:active-agent ctx))]
-    (let [base-extra-args (or (:extra-args docker-spec) "")
-          {:keys [resource-limits residual-extra-args]} (parse-resource-limits base-extra-args)
+  (cond
+    ;; v0.6 T1 — `agent { kubernetes { ... } }`. Checked BEFORE docker
+    ;; because the active-agent map carries `:kubernetes`; docker
+    ;; resolution (via `:active-agent {:docker {…}}`) is a separate
+    ;; shape entirely (the resolve-agent path doesn't upgrade k8s to
+    ;; docker today).
+    (k8s-agent-spec (:active-agent ctx))
+    (let [spec (k8s-agent-spec (:active-agent ctx))
           override (build-overrides/for-job (:job-name ctx))
+          ;; Operators can override k8s resource limits per-job the
+          ;; same way AN7-5b overrides docker. Reuse the docker key —
+          ;; the shape ({:memory-mb :cpus :pids-max :cpu-shares}) is
+          ;; identical and the K8sBackend silently drops the
+          ;; docker-only fields.
           override-limits (:docker-resource-limits override)
-          merged-limits (merge resource-limits override-limits)
-          file-mount-args (file-mounts->extra-args (:file-mounts ctx))
-          ;; Concatenate the residual (post-parse) extra-args with the -v flags.
-          ;; The parsed resource flags are now in `resource-limits` and will
-          ;; be applied via chengis-core's structured key; keeping them in
-          ;; extra-args too would double-apply them on the inline-docker path.
-          extra-args-str (if file-mount-args
-                           (str/trim (str (or residual-extra-args "") " "
-                                          (str/join " " file-mount-args)))
-                           residual-extra-args)]
-      (docker/docker-backend
-       (cond-> {:image (:image docker-spec)
-                :mode :per-step
-                :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}
+          merged-limits (merge (:resource-limits spec) override-limits)
+          kc (k8s-kubeconfig-override)]
+      (k8s/k8s-backend
+       (cond-> {:image (:image spec)
+                :mode :per-step}
+         (:namespace spec) (assoc :namespace (:namespace spec))
+         kc                (assoc :kubeconfig-path kc)
          (seq merged-limits) (assoc :resource-limits merged-limits))))
-    (backend/local-shell-backend {})))
+
+    :else
+    (if-let [docker-spec (docker-agent-spec (:active-agent ctx))]
+      (let [base-extra-args (or (:extra-args docker-spec) "")
+            {:keys [resource-limits residual-extra-args]} (parse-resource-limits base-extra-args)
+            override (build-overrides/for-job (:job-name ctx))
+            override-limits (:docker-resource-limits override)
+            merged-limits (merge resource-limits override-limits)
+            file-mount-args (file-mounts->extra-args (:file-mounts ctx))
+            ;; Concatenate the residual (post-parse) extra-args with the -v flags.
+            ;; The parsed resource flags are now in `resource-limits` and will
+            ;; be applied via chengis-core's structured key; keeping them in
+            ;; extra-args too would double-apply them on the inline-docker path.
+            extra-args-str (if file-mount-args
+                             (str/trim (str (or residual-extra-args "") " "
+                                            (str/join " " file-mount-args)))
+                             residual-extra-args)]
+        (docker/docker-backend
+         (cond-> {:image (:image docker-spec)
+                  :mode :per-step
+                  :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}
+           (seq merged-limits) (assoc :resource-limits merged-limits))))
+      (backend/local-shell-backend {}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Step-spec / result-shape bridge
