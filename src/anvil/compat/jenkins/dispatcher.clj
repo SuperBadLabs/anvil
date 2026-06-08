@@ -94,15 +94,24 @@
 
    Mounts the workspace into the container at the same path (so paths
    echoed by sh make sense both inside and outside). Honors :args from
-   the agent's docker spec (extra docker run args)."
-  [{:keys [image extra-args]} cmd workspace env]
-  (let [base (cond-> ["docker" "run" "--rm" "-i"
-                      "-v" (str workspace \: workspace)
-                      "-w" (str workspace)]
-               extra-args (into (clojure.string/split extra-args #"\s+"))
-               (seq env) (into (mapcat (fn [[k v]] ["-e" (str k \= v)]) env)))
-        argv (conj (vec base) image "sh" "-c" cmd)]
-    argv))
+   the agent's docker spec (extra docker run args).
+
+   AN7-3: optional `file-mounts` is a seq of {:host-path :container-path}
+   maps; each becomes a `-v host:container:ro` flag appended after the
+   workspace mount."
+  ([docker-spec cmd workspace env]
+   (build-docker-args docker-spec cmd workspace env nil))
+  ([{:keys [image extra-args]} cmd workspace env file-mounts]
+   (let [base (cond-> ["docker" "run" "--rm" "-i"
+                       "-v" (str workspace \: workspace)
+                       "-w" (str workspace)]
+                extra-args (into (clojure.string/split extra-args #"\s+"))
+                (seq file-mounts) (into (mapcat (fn [{:keys [host-path container-path]}]
+                                                  ["-v" (str host-path ":" container-path ":ro")])
+                                                file-mounts))
+                (seq env) (into (mapcat (fn [[k v]] ["-e" (str k \= v)]) env)))
+         argv (conj (vec base) image "sh" "-c" cmd)]
+     argv)))
 
 (defn- docker-spec
   "Extract a docker {:image :args} spec from the ctx :active-agent if any."
@@ -985,10 +994,18 @@
       (when (pos? idx)
         [(subs s 0 idx) (subs s (inc idx))]))))
 
+(defn- file-credential-container-path
+  "Canonical container path for a file credential: /anvil-creds/<id>.
+   The host path is stored in the credential's :value field; the
+   container side is always under /anvil-creds/ so operators know where
+   to look."
+  [credential-id]
+  (str "/anvil-creds/" credential-id))
+
 (defn- inject-credentials-into-env
   "Walk the parsed credentials list, look each up in the store, and
    build a {env-var → value} map for the wrapped block. Returns
-   [env-additions, masked-values, unresolved-ids]:
+   [env-additions, masked-values, unresolved-ids, file-mounts]:
      - env-additions: {STRING STRING} to merge into ctx :env
      - masked-values: #{STRING} of resolved secret values for masking
      - unresolved-ids: [STRING ...] credential ids declared in the
@@ -996,15 +1013,25 @@
        [:credential-unresolved …] effects for each — the AN4-1 +
        AN4-3 classifier reads those as :credential-unresolved →
        :failure (AN4-4).
+     - file-mounts: [{:host-path STRING :container-path STRING
+                      :credential-id STRING :var-name STRING}]
+       for :file-type credentials. The caller threads these into ctx
+       so shell-execute can pass them to the docker backend.
 
    String credentials bind one variable. usernamePassword credentials
    bind both usernameVariable + passwordVariable to the respective
    halves of the stored `username:password` string. The masker treats
    both halves (and the original combined string) as secrets so the
-   console log doesn't leak either."
+   console log doesn't leak either.
+
+   File credentials (AN7-3): the stored value is the HOST filesystem
+   path to the file. The container receives the file at
+   /anvil-creds/<credential-id> and the bound variable is set to that
+   path. The host path is NOT added to the secrets masker (it's a
+   filesystem path, not a secret value)."
   [creds]
   (reduce
-   (fn [[env masks unresolved] cred]
+   (fn [[env masks unresolved file-mounts] cred]
      (let [raw (str (or (:raw-args cred) (:raw-text cred) ""))
            id-match (re-find #"credentialsId\s*[:= ]\s*['\"]([^'\"]+)['\"]" raw)
            credential-id (some-> id-match second)
@@ -1017,17 +1044,33 @@
            ;; exactly the v0.3 regression this PR exists to fix.
            usable-value? (and (string? value)
                               (not (str/blank? value)))
-           is-up? (= :username-password (:type looked-up))]
+           cred-type (:type looked-up)
+           is-up? (= :username-password cred-type)
+           is-file? (= :file cred-type)]
        (cond
          ;; A credentialsId was declared but the store didn't resolve it
          ;; to a usable value (missing OR present-but-blank OR store
          ;; uninitialized). AN4-4: surface this so the build fails
          ;; honestly instead of silently binding "".
          (and credential-id (not usable-value?))
-         [env masks (conj unresolved credential-id)]
+         [env masks (conj unresolved credential-id) file-mounts]
 
          (not (and credential-id value))
-         [env masks unresolved]
+         [env masks unresolved file-mounts]
+
+         ;; AN7-3: :file credential — host path in :value, mount into
+         ;; /anvil-creds/<id>. Env var (from `variable:`) → container path.
+         ;; The host path is NOT masked (it's a filesystem path, not a secret).
+         is-file?
+         (let [var-name (:string vars)
+               container-path (file-credential-container-path credential-id)
+               env' (cond-> env
+                      var-name (assoc var-name container-path))
+               mount {:host-path value
+                      :container-path container-path
+                      :credential-id credential-id
+                      :var-name var-name}]
+           [env' masks unresolved (conj file-mounts mount)])
 
          ;; usernamePassword: split `user:pass`, bind each half + the combined
          is-up?
@@ -1042,39 +1085,55 @@
                           u     (conj u)
                           p     (conj p)
                           value (conj value))]
-             [env' masks' unresolved])
+             [env' masks' unresolved file-mounts])
            ;; Stored value without `:` — fall back to binding the whole value
            ;; to whichever var is present, plus masking it.
            (let [var-name (or (:string vars) (:username vars) (:password vars))]
              [(cond-> env var-name (assoc var-name value))
               (conj masks value)
-              unresolved]))
+              unresolved
+              file-mounts]))
 
          ;; string credentials: one variable
          :else
          (let [var-name (or (:string vars) (:username vars))]
            [(cond-> env var-name (assoc var-name value))
             (conj masks value)
-            unresolved]))))
-   [{} #{} []]
+            unresolved
+            file-mounts]))))
+   [{} #{} [] []]
    (or creds [])))
 
 (defn- h-with-credentials [this step ctx]
   (let [creds (:credentials step)
         body (or (:body step) [])
-        [env-additions resolved-secrets unresolved-ids]
+        [env-additions resolved-secrets unresolved-ids file-mounts]
         (inject-credentials-into-env creds)
         approx-secrets (credential-secrets creds)
         added-secrets (into approx-secrets resolved-secrets)
         old-secrets @(:secrets this)
         new-secrets (into old-secrets added-secrets)
         old-env (:env ctx {})
-        new-env (merge old-env env-additions)]
+        new-env (merge old-env env-additions)
+        ;; AN7-3: merge file-mounts into ctx so shell-execute (via
+        ;; backend-wiring) can add -v flags to the docker invocation.
+        old-file-mounts (:file-mounts ctx [])
+        new-file-mounts (into old-file-mounts file-mounts)]
     (log-effect this [:with-credentials/enter
                       {:count (count creds)
                        :secret-count (count added-secrets)
                        :resolved-from-store (count env-additions)
-                       :unresolved-count (count unresolved-ids)}])
+                       :unresolved-count (count unresolved-ids)
+                       :file-credential-count (count file-mounts)}])
+    ;; AN7-3: emit :file-credential/mounted for each file mount so operators
+    ;; can see which files were bound into the container (host path is in
+    ;; the effect; it's a filesystem path, not a secret value).
+    (doseq [{:keys [credential-id host-path container-path var-name]} file-mounts]
+      (log-effect this [:file-credential/mounted
+                        {:credential-id credential-id
+                         :host-path host-path
+                         :container-path container-path
+                         :var-name var-name}]))
     ;; AN4-4: emit one :credential-unresolved effect per credentialId that
     ;; the store didn't resolve. The AN4-3 classifier extension reads
     ;; this as :credential-unresolved → :failure. No more silent bind-
@@ -1095,10 +1154,14 @@
                                        " id, store may not be configured,"
                                        " or the stored value is blank)")}]))
     (reset! (:secrets this) new-secrets)
-    (let [after (run-body this body (assoc ctx :env new-env))]
+    (let [new-ctx (-> ctx
+                      (assoc :env new-env)
+                      (assoc :file-mounts new-file-mounts))
+          after (run-body this body new-ctx)]
       (log-effect this [:with-credentials/leave])
       (reset! (:secrets this) old-secrets)
-      (propagate-or-ok after #(assoc % :env old-env)))))
+      (propagate-or-ok after #(-> % (assoc :env old-env)
+                                    (assoc :file-mounts old-file-mounts))))))
 
 (defn- timeout-ms
   "Compute the timeout in ms from Jenkins's time + unit."
