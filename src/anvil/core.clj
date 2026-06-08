@@ -86,6 +86,30 @@
       ((requiring-resolve 'anvil.build-overrides/start-watcher!))
       (catch Throwable t
         (log/warn t "anvil.build-overrides: watcher start failed; falling back to restart-to-reload")))
+    ;; v0.6 T2 — SecretBackend protocol. install-default-backend!
+    ;; registers the local-disk store. Vault / KMS adapters can then
+    ;; take over per their feature flags (closed by default per AV6-3).
+    (try
+      ((requiring-resolve 'anvil.secrets/install-default-backend!))
+      (catch Throwable t
+        (log/warn t "anvil.secrets: default-backend install failed")))
+    ;; v0.6 T2.2 — Vault adapter (Hashicorp Vault KV v2). When the
+    ;; :vault-backend flag is on AND :anvil.vault/url + :token-path
+    ;; are configured, replaces the active backend with VaultBackend.
+    (when (features/enabled? :vault-backend)
+      (try
+        ((requiring-resolve 'anvil.secrets.vault/install!))
+        (catch Throwable t
+          (log/warn t "anvil.secrets.vault: install failed; staying on previous backend"))))
+    ;; v0.6 T2.3 — Cloud-KMS adapter. AWS-first (GCP/Azure stubs).
+    ;; The encrypted blobs live in anvil.edn; KMS decrypts at resolve
+    ;; time. install! aborts the take-over if SDK is missing — the
+    ;; previously-installed backend remains active.
+    (when (features/enabled? :cloud-kms-backend)
+      (try
+        ((requiring-resolve 'anvil.secrets.kms/install!))
+        (catch Throwable t
+          (log/warn t "anvil.secrets.kms: install failed; staying on previous backend"))))
     ;; T3.4 — GitHub Checks subscriber listens to :build-started /
     ;; :build-done on the bus and PATCHes the github check-run state.
     (when (features/enabled? :pr-checks)

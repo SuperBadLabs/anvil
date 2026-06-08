@@ -30,7 +30,9 @@
             [anvil.compat.jenkins.plugins :as plugins]
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.scm :as scm]
-            [anvil.compat.jenkins.shared-libs :as shared-libs]))
+            [anvil.compat.jenkins.shared-libs :as shared-libs]
+            [anvil.tools.images :as tools-images]
+            [anvil.features :as features]))
 
 (declare ^:private dispatch-fn run-body propagate-or-ok h-sh)
 
@@ -1028,17 +1030,33 @@
        set))
 
 (defn- resolve-credential-from-store
-  "Try to look up a credential by id via the storage backend. Returns
-   nil if the store isn't initialized or the id isn't found.
+  "Look up a credential by id. v0.6 T2: the lookup goes through the
+   `anvil.secrets` SecretBackend protocol — the registered backend
+   could be the default local-disk store, Vault, KMS, or an
+   operator-pluggable impl per AV6-3.
 
-   We require the store namespace via resolve+requiring-resolve so the
-   dispatcher doesn't hard-depend on a running SQLite DB in tests that
-   only exercise the recording path."
+   Single-arity preserved so the v0.5 test contract (which redefs
+   this fn) still holds.  Per-build `:secret-resolved` event
+   publication happens in `inject-credentials-into-env` via
+   `anvil.secrets/publish-resolved-event!` — that way tests redef'ing
+   this resolver still drive the emit path naturally without picking
+   up an arity change.
+
+   We require the secrets namespace lazily so the dispatcher doesn't
+   hard-depend on it from tests that only exercise the recording
+   path."
   [credential-id]
   (try
-    (when-let [lookup (requiring-resolve 'anvil.storage.credentials/lookup)]
-      (lookup credential-id))
-    (catch Throwable _ nil)))
+    (when-let [active (requiring-resolve 'anvil.secrets/active-backend)]
+      (when-let [resolve! (requiring-resolve 'anvil.secrets/resolve!)]
+        (resolve! (active) credential-id)))
+    (catch Throwable _
+      ;; Fall back to the v0.5 path if the new ns isn't on the
+      ;; classpath for some reason — keeps the dispatcher robust.
+      (try
+        (when-let [lookup (requiring-resolve 'anvil.storage.credentials/lookup)]
+          (lookup credential-id))
+        (catch Throwable _ nil)))))
 
 (defn- credential-var-bindings
   "Extract the {role → var-name} map from a credential's raw-args text.
@@ -1113,15 +1131,32 @@
    path to the file. The container receives the file at
    /anvil-creds/<credential-id> and the bound variable is set to that
    path. The host path is NOT added to the secrets masker (it's a
-   filesystem path, not a secret value)."
-  [creds]
+   filesystem path, not a secret value).
+
+   v0.6 T2: `ctx` (the dispatcher ctx) is forwarded to
+   `resolve-credential-from-store/2` so the secrets layer can emit a
+   `:secret-resolved` SSE event with :job-name + :build-number on
+   successful resolution. Pass nil for tests / recording-only paths."
+  ([creds] (inject-credentials-into-env creds nil))
+  ([creds ctx]
   (reduce
    (fn [[env masks unresolved file-mounts] cred]
      (let [raw (str (or (:raw-args cred) (:raw-text cred) ""))
            id-match (re-find #"credentialsId\s*[:= ]\s*['\"]([^'\"]+)['\"]" raw)
            credential-id (some-> id-match second)
            vars (credential-var-bindings raw)
-           looked-up (when credential-id (resolve-credential-from-store credential-id))
+           t0 (System/nanoTime)
+           looked-up (when credential-id
+                       (resolve-credential-from-store credential-id))
+           _ (when (and ctx credential-id looked-up
+                        (string? (:value looked-up))
+                        (not (str/blank? (:value looked-up))))
+               ;; v0.6 T2.5 — publish :secret-resolved (no value in payload).
+               (try
+                 (when-let [pub (requiring-resolve 'anvil.secrets/publish-resolved-event!)]
+                   (let [ms (long (/ (- (System/nanoTime) t0) 1e6))]
+                     (pub ctx credential-id ms)))
+                 (catch Throwable _ nil)))
            value (:value looked-up)
            ;; Treat a blank/empty-string :value as unresolved — anvil's
            ;; credentials store allows empty values (PR-review point on
@@ -1188,13 +1223,13 @@
             unresolved
             file-mounts]))))
    [{} #{} [] []]
-   (or creds [])))
+   (or creds []))))
 
 (defn- h-with-credentials [this step ctx]
   (let [creds (:credentials step)
         body (or (:body step) [])
         [env-additions resolved-secrets unresolved-ids file-mounts]
-        (inject-credentials-into-env creds)
+        (inject-credentials-into-env creds ctx)
         approx-secrets (credential-secrets creds)
         added-secrets (into approx-secrets resolved-secrets)
         old-secrets @(:secrets this)
@@ -1782,12 +1817,53 @@
         ;; and anvil's pluggable executors — the unlock for the
         ;; wild-corpus dirty-dozen, all of which use agent { label
         ;; '...' } rather than agent { docker { ... } }.
+        ;;
+        ;; AN8-1: when the stage's effective `tools { maven 'X' jdk 'Y' }`
+        ;; spec resolves through :anvil.tools/images in anvil.edn to a
+        ;; pre-baked image, AND the current agent isn't already declaring
+        ;; its own docker image (Jenkinsfile-declared `agent { docker
+        ;; { image '...' } }` wins — operator never overrides an
+        ;; explicit author choice), upgrade :active-agent to that image.
+        ;; No mapping → :tools/unmapped effect + the existing agent
+        ;; resolution stands.
+        tools-spec (:tools step)
+        tools-feature-on? (try (features/enabled? :tools-directive)
+                               (catch Throwable _ false))
+        explicit-docker? (or (:docker (:agent step))
+                             (:dockerfile (:agent step))
+                             (and resolved (= :docker (:executor resolved))))
+        tools-resolution (when (and tools-feature-on?
+                                    (seq tools-spec)
+                                    (not explicit-docker?))
+                           (tools-images/resolve-image tools-spec))
+        _ (when (and tools-feature-on? (seq tools-spec))
+            (if (and tools-resolution (:image tools-resolution))
+              (log-effect d [:tools/resolved
+                             {:stage (:stage step)
+                              :tools tools-spec
+                              :matched-key (:matched-key tools-resolution)
+                              :image (:image tools-resolution)}])
+              (log-effect d [:tools/unmapped
+                             {:stage (:stage step)
+                              :tools tools-spec
+                              :candidate-keys (:candidate-keys tools-resolution)
+                              :explain (str "no :anvil.tools/images mapping for "
+                                            (pr-str tools-spec)
+                                            " — falling back to current agent. "
+                                            "Add a mapping under one of the candidate keys "
+                                            "in anvil.edn.")}])))
+        tools-upgrade (when (and tools-resolution (:image tools-resolution))
+                        {:docker {:image (:image tools-resolution)}
+                         :resolved-from-tools
+                         {:tools tools-spec
+                          :matched-key (:matched-key tools-resolution)}})
         active-agent (or dockerfile-upgrade
                          (and resolved
                               (= :docker (:executor resolved))
                               (:docker resolved)
                               {:docker (:docker resolved)
                                :resolved-from-label label})
+                         tools-upgrade
                          (:agent step))]
     (when (and resolved (:degraded? resolved))
       (log-effect d [:agent/degraded

@@ -177,13 +177,23 @@
     ;; When on, credentials resolved via withCredentials hit Vault
     ;; before the local-disk fallback. Operator configures via
     ;; :anvil.vault/url + :anvil.vault/token-path in anvil.edn.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). The flag default-on is safe because the install! path
+    ;; refuses to take over without operator config (:anvil.vault/url
+    ;; + :token-path) — when those are absent, the local-disk backend
+    ;; remains active and behavior is bit-identical to v0.5.x.
     :vault-backend
 
     ;; :cloud-kms-backend — T2. anvil.secrets.kms adapter (AV6-3).
     ;; SecretBackend protocol impl backed by Cloud KMS (AWS-first;
     ;; GCP + Azure stubs in v0.6.x). Encrypted blob lives in
-    ;; anvil.edn / Git; KMS decrypts at resolve time. Closed-by-
-    ;; default; operator opts in per-deployment.
+    ;; anvil.edn / Git; KMS decrypts at resolve time.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). Same safety as :vault-backend — without operator config
+    ;; (:anvil.kms/provider + region + blobs) the install! path no-ops
+    ;; with a WARN; the local-disk backend stays active.
     :cloud-kms-backend
 
     ;; :dockerfile-multistage — T3. Multi-stage Dockerfile support
@@ -200,6 +210,29 @@
     ;; builds. Operators who want explicitly v0.5-shaped behavior can
     ;; set `:anvil.features/dockerfile-multistage false` in anvil.edn.
     :dockerfile-multistage
+
+    ;; :tools-directive — AN8-1. Honor `tools { maven 'X' jdk 'Y' }`
+    ;; by mapping the surface to a pre-baked docker image via
+    ;; :anvil.tools/images in anvil.edn (operator-curated; anvil never
+    ;; provisions toolchains itself). Without the flag the dispatcher
+    ;; ignores the tools block; with it on, a stage with a resolvable
+    ;; tools spec runs in the mapped image, an unresolvable one emits
+    ;; a :tools/unmapped effect with candidate keys and falls back to
+    ;; the agent the Jenkinsfile declared. Closed-by-default through
+    ;; AN8-1 ship; flipped to true once a v0.6.x receipt confirms the
+    ;; mapping unblocks at least one wild-corpus heavy.
+    :tools-directive
+
+    ;; :parameters-defaults — AN8-2. Propagate
+    ;; `parameters { choice(name:'X', choices:['a','b']) }` defaults
+    ;; into ctx :parameters BEFORE the build runs, so downstream
+    ;; expression like `params.X`, `agent { label { label params.X } }`,
+    ;; and `${X}` GString interpolation resolve to the first choice
+    ;; (or :defaultValue if declared). Operator overrides via REST
+    ;; trigger payload + :anvil.parameters/defaults per-job continue
+    ;; to win. Without the flag, ctx :parameters stays bare and the
+    ;; AN7-5c receipt's apache-activemq nodeLabel failure mode persists.
+    :parameters-defaults
 
     ;; :scm-checkout-lifecycle — AN8-4. Universal fidelity fix —
     ;; declarative pipelines without an explicit `checkout scm` step
@@ -239,8 +272,17 @@
        `{:anvil.features/k8s-agent false}` in anvil.edn to opt out;
        the dispatcher then degrades `agent { kubernetes { … } }` to
        :unsupported honestly instead of trying (and failing) to
-       reach the cluster."
-  #{:dockerfile-multistage :k8s-agent})
+       reach the cluster.
+     :vault-backend     — v0.6 T2. install! refuses to take over
+                          without operator config; without
+                          :anvil.vault/url + :token-path in
+                          anvil.edn, the local-disk backend stays
+                          active and behavior is bit-identical to
+                          v0.5.x.
+     :cloud-kms-backend — v0.6 T2. Same posture as :vault-backend
+                          — install! no-ops without :anvil.kms
+                          config; local-disk stays active."
+  #{:dockerfile-multistage :k8s-agent :vault-backend :cloud-kms-backend})
 
 (def ^:private flag-ns "anvil.features")
 
@@ -264,10 +306,11 @@
    values into the in-process registry. Idempotent — re-calling
    re-reads the file. Returns the resulting flag map for logging.
 
-   Unknown flags in the file are ignored (forward-compat). Missing
-   flags fall back to per-feature defaults — see `default-on-features`
-   for the set of features that default to `true` once their tranche
-   has shipped (AV6-7)."
+   Unknown flags in the file are ignored (forward-compat). For flags
+   missing from anvil.edn, the per-flag default applies:
+   `default-on-features` membership → true; otherwise → false (see
+   `default-on-features` for the set of features that default to
+   `true` once their tranche has shipped per AV6-7)."
   []
   (let [edn (config/load-edn "anvil" {})
         flags (into {}

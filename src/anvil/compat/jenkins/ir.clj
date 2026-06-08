@@ -203,6 +203,44 @@
        (remove nil?)
        set))
 
+(defn default-parameters
+  "AN8-2 — return a `{name → default-string}` map of the defaults the
+   translator can statically extract from the pipeline's `parameters`
+   block. Mirrors Jenkins's declarative-parameters semantics:
+
+     - `string(defaultValue: 'X')`        → name → 'X'
+     - `booleanParam(defaultValue: true)` → name → 'true'
+     - `choice(defaultValue: 'X', …)`     → name → 'X'
+     - `choice(choices: ['a', 'b'])`      → name → 'a'   (first choice)
+     - `password(defaultValue: 'X')`      → name → 'X'
+
+   Parameters without a name OR without any resolvable default are
+   omitted; the dispatcher leaves their `params.X` as nil (same as
+   real Jenkins for a triggerless first build).
+
+   Returned values are always coerced to strings — Jenkins's
+   `params.X` is a String at runtime even for boolean params (it's
+   the printed form 'true'/'false')."
+  [pipeline-ir]
+  (let [params (when pipeline-ir (:parameters pipeline-ir))]
+    (->> params
+         (keep (fn [{:keys [name kind default-value choices]}]
+                 (let [v (cond
+                           (and (string? default-value)
+                                (not (str/blank? default-value)))
+                           default-value
+
+                           (= :choice kind)
+                           (some-> (first choices) str)
+
+                           (some? default-value)
+                           (str default-value)
+
+                           :else nil)]
+                   (when (and name v)
+                     [name v]))))
+         (into {}))))
+
 (defn summarize
   "Compact summary suitable for tests / coverage reports."
   [pipeline-ir]
