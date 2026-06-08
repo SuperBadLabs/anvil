@@ -821,6 +821,125 @@
              cl-default     (assoc :default-value cl-default)
              (seq cl-choices) (assoc :choices (filterv some? cl-choices)))))))))
 
+;; ---------------------------------------------------------------------------
+;; AN7-2 — ${X} GString interpolation in declarative-pipeline string contexts
+;;
+;; Per R5 (board): scope strictly to declarative-pipeline string contexts:
+;;   - agent { label "${X}" }
+;;   - environment { KEY = "${X}..." } (via translate-environment regex path)
+;;   - parameters { string(defaultValue: "${X}") } — recursive; not in scope
+;;     for T1 (too rare)
+;;
+;; DO NOT touch sh '...' bodies — Groovy ${X} ≠ bash ${X}. The translator
+;; must NEVER substitute inside a sh command string.
+;;
+;; Resolution logic:
+;;   1. Extract every ${X} variable name from the GString template
+;;   2. For each X, look up in the pipeline's parameters vector:
+;;      - :string param with matching name + a non-blank :default-value
+;;      - :choice param with matching name + a non-blank :default-value
+;;        (or first choice as fallback)
+;;   3. If ALL references resolved: substitute and return the static string
+;;   4. If ANY reference unresolvable: return {:unresolved [X1 X2 ...]}
+;;      so the caller can emit an honest :translator/unresolved-interpolation
+;;      effect (AV5-6) rather than silently falling through to "<dynamic>".
+;; ---------------------------------------------------------------------------
+
+(defn- extract-gstring-vars
+  "Extract the variable names from a GString cdata text.
+
+   Groovy's GStringExpression.getText() normalizes variable references to
+   the bare `$VARNAME` form (without curly braces), so the cdata text for
+   `\"${PLATFORM}-${ARCH}\"` arrives as `\"$PLATFORM-$ARCH\"`.
+
+   This function extracts the variable names from both forms:
+     - `${VARNAME}` (curly-brace form, as written by the developer)
+     - `$VARNAME`   (bare form, as emitted by Groovy's getText())
+
+   Returns a vector of distinct variable name strings.
+   Examples:
+     '$PLATFORM'         → ['PLATFORM']
+     '$PLATFORM-$ARCH'   → ['PLATFORM' 'ARCH']
+     '${PLATFORM}${JDK}' → ['PLATFORM' 'JDK']   (curly-brace if present)
+     'linux-build'       → []                    (no variables)"
+  [text]
+  (let [t (str text)
+        ;; Match both ${VARNAME} (with braces) and $VARNAME (bare form).
+        ;; The alternation lists the braced form first so it takes priority
+        ;; when both could match at the same position.
+        matches (re-seq #"\$\{(\w+)\}|\$([A-Za-z_]\w*)" t)]
+    (->> matches
+         (mapv (fn [[_ braced bare]] (or braced bare)))
+         distinct
+         vec)))
+
+(defn- resolve-param-value
+  "Look up parameter `param-name` in `parameters` vector. Returns the
+   static string value to substitute, or nil if not resolvable.
+
+   Resolution order:
+     1. :string param → :default-value (if non-blank)
+     2. :choice param → :default-value (if non-blank)
+     3. :choice param → first of :choices (if present)
+     4. nil (unresolvable)"
+  [param-name parameters]
+  (when (seq parameters)
+    (some (fn [{:keys [kind name default-value choices]}]
+            (when (= name param-name)
+              (cond
+                (and (#{:string :choice} kind)
+                     (string? default-value)
+                     (not (str/blank? default-value)))
+                default-value
+
+                (and (= kind :choice) (seq choices))
+                (first choices)
+
+                :else nil)))
+          parameters)))
+
+(defn- interpolate-gstring
+  "AN7-2 — substitute `${X}` references in a GString template using the
+   pipeline's parsed parameters.
+
+   `gstring-text` — the text from a :gstring cdata node
+                    (e.g. '${PLATFORM}' or 'linux-${ARCH}-java${JDK}')
+   `parameters`   — vector of parsed param specs from translate-parameters
+
+   Returns:
+     {:resolved <static-string>}
+       — all references substituted
+     {:unresolved [<name> ...]}
+       — at least one reference could not be resolved; the named variables
+         are listed so the dispatcher can emit an honest effect"
+  [gstring-text parameters]
+  (let [vars (extract-gstring-vars gstring-text)]
+    (if (empty? vars)
+      ;; No ${X} refs — treat as a literal string (bare GString without
+      ;; variable references, which is unusual but valid Groovy)
+      {:resolved gstring-text}
+      (let [resolutions (reduce (fn [acc var-name]
+                                  (let [v (resolve-param-value var-name parameters)]
+                                    (assoc acc var-name v)))
+                                {}
+                                vars)
+            unresolved (filterv #(nil? (get resolutions %)) vars)]
+        (if (seq unresolved)
+          {:unresolved unresolved}
+          ;; All resolved — do the substitution.
+          ;; The GString text uses the bare `$VARNAME` form (no curly braces)
+          ;; from Groovy's getText(). Replace $VARNAME with the resolved value.
+          ;; Use a word-boundary pattern to avoid substituting `$PLATFORM` in
+          ;; `$PLATFORM_X` as if it were `$PLATFORM`.
+          {:resolved (reduce
+                      (fn [s var-name]
+                        (str/replace s
+                                     (java.util.regex.Pattern/compile
+                                      (str "\\$\\{" var-name "\\}|\\$" var-name "(?!\\w)"))
+                                     (get resolutions var-name)))
+                      gstring-text
+                      vars)})))))
+
 (defn- resolve-param-driven-label
   "AN6-1 — given a nested label closure (the inner `label { … }` whose
    body re-calls `label params.X`) and the pipeline's parsed
@@ -855,7 +974,8 @@
                                 second)))
         match (when param-ref
                 (some (fn [{:keys [kind name] :as p}]
-                        (when (and (= kind :choice) (= name param-ref))
+                        ;; AN6-1 looked at :choice only; AN7-2 extends to :string
+                        (when (and (#{:choice :string} kind) (= name param-ref))
                           p))
                       parameters))
         choices (:choices match)
@@ -918,7 +1038,18 @@
                                (let [inner-body (body-calls first-arg)]
                                  (find-call inner-body "label")))
                 inferred (when nested-inner
-                           (resolve-param-driven-label nested-inner parameters))]
+                           (resolve-param-driven-label nested-inner parameters))
+                ;; AN7-2 — GString interpolation form:
+                ;;   agent { label "${PLATFORM}" }
+                ;; The first arg is a :gstring node (Groovy double-quoted
+                ;; string with ${X} variable references). Scope-limited
+                ;; to the declarative agent { label } context per R5.
+                gstring-text (when (and (nil? static) (nil? nested-inner)
+                                        (map? first-arg)
+                                        (= :gstring (:type first-arg)))
+                               (:text first-arg))
+                gstring-result (when gstring-text
+                                 (interpolate-gstring gstring-text parameters))]
             (cond
               static
               {:label static}
@@ -931,6 +1062,20 @@
               nested-inner
               {:label "<dynamic>"
                :degrade-reason :param-driven-label}
+
+              ;; AN7-2 — GString resolved: all ${X} refs had param defaults
+              (and gstring-result (:resolved gstring-result))
+              {:label (:resolved gstring-result)
+               :interpolated-from gstring-text}
+
+              ;; AN7-2 — GString unresolvable: honest fallback per AV5-6
+              ;; The dispatcher emits :translator/unresolved-interpolation
+              ;; when it sees this annotation.
+              (and gstring-result (:unresolved gstring-result))
+              {:label "<unresolved-interpolation>"
+               :gstring-template gstring-text
+               :unresolved-vars (:unresolved gstring-result)
+               :degrade-reason :unresolved-interpolation}
 
               :else
               {:label "<dynamic>"}))
