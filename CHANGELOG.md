@@ -1,5 +1,54 @@
 # anvil — changelog
 
+## 0.6.1 — AN8-4 non-fatal-on-populated-workspace heuristic (2026-06-08)
+
+Patch release for the regression the v0.6.0 dirty-dozen rerun
+uncovered: `wild-apache-activemq` went from `:success` on v0.5.0 to
+`:failure` on v0.6.0 because AN8-4's implicit `checkout scm` failed
+to clone the large activemq repo and aborted the build. The shim's
+`mvn -DskipTests install` would have succeeded against the stale
+workspace from prior runs — that's exactly how v0.5.0 produced its
+`:success`.
+
+### Fix
+
+`dispatcher/h-checkout`: when implicit checkout fails, check whether
+the workspace is populated. If yes, downgrade to a `:checkout`
+effect with `:result :degraded :reason :workspace-populated` and
+return ok — downstream steps run against the stale workspace and
+either succeed (shim doesn't need fresh source) or fail with their
+own honest exit code (preserves AV6-6). If the workspace is empty,
+v0.6.0 fail-fast behavior is preserved — an empty workspace plus a
+failed clone is the unambiguous case where stage 1 has nothing to
+operate on.
+
+New helper `workspace-has-files?` treats hidden entries (`.gitignore`,
+`.git` from a failed clone) as empty — a dotfile-only directory
+doesn't constitute a usable stale workspace.
+
+### Tests
+
+`dispatcher_test.clj` — 3 new tests:
+- `h-checkout-implicit-failed-provision-downgrades-when-workspace-populated`
+- `h-checkout-implicit-failed-provision-degraded-effect-stays-fatal-on-empty-workspace`
+- `h-checkout-implicit-failed-provision-treats-dotfile-only-workspace-as-empty`
+
+Renamed: `h-checkout-implicit-failed-provision-bubbles` →
+`h-checkout-implicit-failed-provision-bubbles-on-empty-workspace`
+to reflect the narrower invariant.
+
+Full dispatcher suite: 14 tests / 55 assertions green.
+
+### Receipt
+
+`docs/jenkins-compat/v0-6-0-t6-receipt.md` updated with the
+empirical dirty-dozen tally (5/14 on v0.6.0 baseline before the
+fix) and the projected 6/14 restoration after this patch lands.
+`docs/jenkins-compat/an8-4-scm-checkout-lifecycle.md` updated with
+the heuristic addendum.
+
+---
+
 ## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity Release (2026-06-08)
 
 The release the [v0.6 execution board](docs/roadmap/v0.6-board.md)

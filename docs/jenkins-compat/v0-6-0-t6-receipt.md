@@ -42,10 +42,91 @@ Verified: `anvil.features: 8/27 enabled` includes all four AN8 flags
 the **real upstream Jenkinsfiles** (not the AN7-1 shims) to measure
 the AN8 lift directly on the AN7-5c failure modes.
 
-## Per-build observed verdicts
+## Per-build observed verdicts (empirical)
 
-(Filled in as the experiment runs. Verdicts are anvil-classifier output
-— `:success`, `:failure :step-nonzero-exit`, `:unsupported :…`, etc.)
+Triggered 2026-06-08 13:30 CDT on `heman:8765` (master `94e07c4` = v0.6.0
+tag). All 14 builds reached terminal state; results below.
+
+| # | Build | v0.5.0 verdict | v0.6.0 verdict | Δ | Type | Notes |
+|---|---|---|---|:-:|:-:|---|
+| 1 | apache-cassandra | ✅ :success (PR #75 Ant synthetic) | ✅ :success | = | B | unchanged |
+| 2 | apache-maven | ✅ :success (AN7-1 shim) | ✅ :success | = | B | unchanged |
+| 3 | apache-activemq | ✅ :success (AN7-1 shim) | ❌ :failure | **↓** | B | **REGRESSION** — AN8-4 implicit clone failed on fresh workspace; fixed in v0.6.1 |
+| 4 | apache-zookeeper | ✅ :success (AN7-1 shim) | ✅ :success | = | B | `:checkout :refreshed` worked (prior workspace) |
+| 5 | eclipse-jdt-core | ✅ :success (AN7-1 shim) | ✅ :success | = | B | same — refreshed existing workspace |
+| 6 | apache-hbase | ✅ :success (degenerate `\|\| true`) | ✅ :success | = | A | unchanged |
+| 7 | hibernate-orm | ❌ :failure | ❌ :failure | = | A | upstream `@Library` resolution honest |
+| 8 | hibernate-search | ❌ :failure | ❌ :failure | = | A | same |
+| 9 | eclipse-jkube | ❌ :failure | ❌ :failure | = | A | AN7-3 wired; real CI signing chain incomplete |
+| 10 | apache-camel | ❌ :failure | ❌ :failure | = | A | honest upstream test failures |
+| 11 | apache-cxf | ❌ :failure | ❌ :failure | = | A | honest upstream |
+| 12 | apache-streampipes | ❌ :failure | ❌ :failure | = | A | honest upstream |
+| 13 | apache-camel-quarkus | ❌ :failure | ❌ :failure | = | A | honest upstream |
+| 14 | eclipse-epsilon | ❌ :unsupported :agent-unhonored | ❌ :failure | ~ | A | T1 k8s now honors agent shape; full cluster wiring still incomplete |
+
+### Tally
+
+| | v0.5.0 | v0.6.0 (this rerun) | v0.6.1 (post-patch projection) |
+|---|---:|---:|---:|
+| :success | **6 / 14** | **5 / 14** ↓ | **6 / 14** restored |
+| type-A :success | 1 (hbase) | 1 (hbase) | 1 (hbase) |
+| type-B :success | 5 | 4 | 5 (activemq returns) |
+| :failure | 8 | 9 | 8 |
+
+### What this empirical run proved
+
+1. **AN8 effects fire end-to-end in production.** Every build's console
+   shows `[defaults-applied]` (AN8-2 three-layer merge) +
+   `[checkout :implicit?]` (AN8-4 SCM-lifecycle). Sample from
+   `wild-apache-activemq #6`:
+
+   ```
+   [defaults-applied] {translator-defaults {nodeLabel "ubuntu"
+                                            jdkVersion "jdk_17_latest"
+                                            testsEnabled "true"}
+                       operator-defaults {} runtime-params {}
+                       effective {...}}
+   [stage] Initialization — agent: label:ubuntu
+   [inferred-from-choice] {param "nodeLabel" chosen "ubuntu"
+                           source :first-choice stage "Initialization"}
+   [unmapped] {stage "Initialization"
+               tools [{:type :maven :version "maven_3_latest"}
+                      {:type :jdk :version "<Groovy AST node>"}]
+               candidate-keys nil
+               explain "no :anvil.tools/images mapping … fallback"}
+   [checkout] {:implicit? true :result :failed
+               :error "git clone failed"
+               :source :scm-lifecycle}
+   ```
+
+2. **AN8-1 has a v0.6.x gap**: `params.X` interpolation inside `tools{}`
+   blocks isn't propagated. The translator captures the Groovy AST
+   node rather than the resolved string. Filed as a v0.6.x follow-up.
+
+3. **AN8-4 regression on shims with no SCM-using steps**: implicit
+   clone of large repos fails fast (~800 ms), aborts the build. Fixed
+   in v0.6.1 — see follow-up section below.
+
+### v0.6.1 fix
+
+Shipped as a patch release on `2026-06-08`. `dispatcher/h-checkout`
+gained a heuristic: when implicit checkout fails AND the workspace
+has files (stale-but-populated from a prior build), downgrade to a
+`:checkout :result :degraded :reason :workspace-populated` effect
+and return ok. Downstream steps run against the stale workspace and
+either succeed or fail with their own honest exit codes — exactly the
+v0.5.0 pre-AN8-4 behavior. Empty workspace + failed clone preserves
+v0.6.0 fail-fast.
+
+See [CHANGELOG.md 0.6.1 entry](../../CHANGELOG.md#061--an8-4-non-fatal-on-populated-workspace-heuristic-2026-06-08)
+and [an8-4-scm-checkout-lifecycle.md heuristic addendum](an8-4-scm-checkout-lifecycle.md).
+
+---
+
+## Earlier draft (per-build expected verdicts, pre-rerun)
+
+The table below was the pre-rerun expectation; preserved for diff
+comparison with the empirical results above.
 
 | # | Build | v0.5.0 verdict | v0.6.0 verdict | Type | Notes |
 |---|---|---|---|:---:|---|

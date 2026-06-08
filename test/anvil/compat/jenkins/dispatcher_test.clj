@@ -2,6 +2,7 @@
   "AnvilJenkinsDispatcher unit tests + end-to-end with the chengis-core
    reference orchestrator."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.dispatcher :as ad]
             [anvil.compat.jenkins.scm :as scm]))
@@ -158,12 +159,15 @@
         (is (= :skipped (:result payload)))
         (is (= :no-scm-configured (:reason payload)))))))
 
-(deftest h-checkout-implicit-failed-provision-bubbles
-  (testing "scm/provision! returning :failed yields a :failed dispatcher result"
+(deftest h-checkout-implicit-failed-provision-bubbles-on-empty-workspace
+  (testing "scm/provision! returning :failed yields :failed dispatcher result when workspace is empty"
     (with-redefs [scm/provision! (constantly {:result :failed
                                               :error "fatal: repo not found"})]
       (let [d (ad/make)
             scm-cfg {:type :git :url "https://nope/repo.git" :branch "main"}
+            ;; /tmp/ws doesn't exist or is empty — fail-fast preserves the
+            ;; AN8-4 receipt's "honest cause vs downstream red herring"
+            ;; promise for the truly-empty workspace case.
             result (d/dispatch d
                                {:type :jenkins/checkout :implicit? true}
                                {:workspace "/tmp/ws"
@@ -171,6 +175,93 @@
         (is (= :failed (:status result)))
         (is (= :scm-checkout-failed (:error result)))
         (is (string? (:message result)))))))
+
+;; ---------------------------------------------------------------------------
+;; v0.6.1 — AN8-4 non-fatal-on-populated-workspace heuristic
+;;
+;; The v0.6.0 dirty-dozen rerun regressed activemq from :success → :failure
+;; because the implicit clone of https://github.com/apache/activemq failed
+;; (large repo, fresh-clone timeout). The shim's `mvn install` would have
+;; succeeded against the stale workspace from prior builds — that's exactly
+;; how it produced :success on v0.5.0. Heuristic: when implicit checkout
+;; fails AND workspace has files, downgrade to :degraded and continue.
+;; ---------------------------------------------------------------------------
+
+(deftest h-checkout-implicit-failed-provision-downgrades-when-workspace-populated
+  (testing "failed clone + populated workspace → :degraded effect + ok status (v0.6.1 heuristic)"
+    (let [tmp-ws (io/file (System/getProperty "java.io.tmpdir")
+                          (str "anvil-h-checkout-populated-" (System/nanoTime)))]
+      (try
+        (.mkdirs tmp-ws)
+        ;; Stale workspace contents — e.g. from a prior successful build.
+        (spit (io/file tmp-ws "pom.xml") "<project/>")
+        (with-redefs [scm/provision! (constantly {:result :failed
+                                                  :error "git clone failed"})]
+          (let [d (ad/make)
+                scm-cfg {:type :git :url "https://nope/repo.git" :branch "main"}
+                result (d/dispatch d
+                                   {:type :jenkins/checkout :implicit? true}
+                                   {:workspace (.getAbsolutePath tmp-ws)
+                                    :scm scm-cfg})]
+            (is (= :ok (:status result))
+                "downstream steps should run against the stale workspace")
+            (let [evs @(:effects d)
+                  payloads (mapv second evs)
+                  degraded (some #(when (= :degraded (:result %)) %) payloads)]
+              (is (some? degraded)
+                  "a :degraded effect must be logged for operator visibility")
+              (is (= :workspace-populated (:reason degraded)))
+              (is (string? (:explain degraded))
+                  ":explain string for the build log")
+              (is (string? (:error degraded))
+                  "original :error preserved on the degraded effect"))))
+        (finally
+          (when (.exists tmp-ws)
+            (doseq [f (.listFiles tmp-ws)] (.delete f))
+            (.delete tmp-ws)))))))
+
+(deftest h-checkout-implicit-failed-provision-degraded-effect-stays-fatal-on-empty-workspace
+  (testing "failed clone + empty workspace → :failed (v0.6.0 fail-fast preserved)"
+    (let [tmp-ws (io/file (System/getProperty "java.io.tmpdir")
+                          (str "anvil-h-checkout-empty-" (System/nanoTime)))]
+      (try
+        (.mkdirs tmp-ws)
+        ;; Workspace is empty (.mkdirs creates the dir, nothing inside).
+        (with-redefs [scm/provision! (constantly {:result :failed
+                                                  :error "git clone failed"})]
+          (let [d (ad/make)
+                scm-cfg {:type :git :url "https://nope/repo.git" :branch "main"}
+                result (d/dispatch d
+                                   {:type :jenkins/checkout :implicit? true}
+                                   {:workspace (.getAbsolutePath tmp-ws)
+                                    :scm scm-cfg})]
+            (is (= :failed (:status result))
+                "empty workspace + failed clone → fail-fast (AN8-4 v0.6.0 behavior)")
+            (is (= :scm-checkout-failed (:error result)))))
+        (finally
+          (when (.exists tmp-ws) (.delete tmp-ws)))))))
+
+(deftest h-checkout-implicit-failed-provision-treats-dotfile-only-workspace-as-empty
+  (testing "workspace with only hidden files (e.g. a bare .gitignore from prior failed clone) is treated as empty"
+    (let [tmp-ws (io/file (System/getProperty "java.io.tmpdir")
+                          (str "anvil-h-checkout-dotonly-" (System/nanoTime)))]
+      (try
+        (.mkdirs tmp-ws)
+        (spit (io/file tmp-ws ".gitignore") "# only a dotfile")
+        (with-redefs [scm/provision! (constantly {:result :failed
+                                                  :error "git clone failed"})]
+          (let [d (ad/make)
+                scm-cfg {:type :git :url "https://nope/repo.git" :branch "main"}
+                result (d/dispatch d
+                                   {:type :jenkins/checkout :implicit? true}
+                                   {:workspace (.getAbsolutePath tmp-ws)
+                                    :scm scm-cfg})]
+            (is (= :failed (:status result))
+                "dotfile-only workspace doesn't contain a real prior build's source — still fail-fast")))
+        (finally
+          (when (.exists tmp-ws)
+            (doseq [f (.listFiles tmp-ws)] (.delete f))
+            (.delete tmp-ws)))))))
 
 (deftest h-checkout-explicit-unchanged-by-an8-4
   (testing "explicit checkout step (no :implicit? flag) still just records effect — pre-AN8-4 behavior preserved"
