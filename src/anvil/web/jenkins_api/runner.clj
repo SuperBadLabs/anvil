@@ -12,6 +12,7 @@
    per-job concurrency limit lands when the executor's work-scheduler
    is plumbed in fully."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [taoensso.timbre :as log]
             [chengis.engine.dispatcher :as d]
             [anvil.compat.jenkins.classification :as classify]
@@ -28,6 +29,60 @@
             [anvil.web.log-tail :as log-tail]
             [anvil.parameters-defaults :as params-defaults]
             [anvil.features :as features]))
+
+;; ---------------------------------------------------------------------------
+;; v0.6.2 security — runtime-param redaction for the
+;; [:parameters/defaults-applied] effect
+;;
+;; The runtime params come from the REST trigger body (e.g. a POST to
+;; `/jenkins/job/<j>/buildWithParameters?PASSWORD=hunter2` or the JSON
+;; equivalent) and may carry secrets. Translator + operator defaults
+;; live in the Jenkinsfile / anvil.edn — public config, safe to log.
+;;
+;; The dispatcher's `:secrets` masker only covers values that flowed
+;; through `withCredentials` — trigger-time params bypass that masker.
+;; The effect payload is persisted to the build's DB row AND rendered
+;; into `/consoleText`, so without redaction here a REST trigger with
+;; {"PASSWORD": "hunter2"} leaks the secret to disk + log.
+;;
+;; Redaction shape: keep names (so operators can audit which params
+;; were supplied), replace each value with `<provided>` (non-blank
+;; string / non-nil) or `<empty>` (blank / nil). Values are NEVER
+;; rendered, regardless of their type.
+;; ---------------------------------------------------------------------------
+
+(defn ^:no-doc redact-runtime-values
+  "Replace every value in `m` with `<provided>` or `<empty>` indicator.
+   Returns `{}` for nil / non-map input."
+  [m]
+  (reduce-kv
+   (fn [acc k v]
+     (assoc acc k
+            (cond
+              (nil? v) "<empty>"
+              (and (string? v) (str/blank? ^String v)) "<empty>"
+              :else "<provided>")))
+   {}
+   (or m {})))
+
+(defn ^:no-doc redact-effective-runtime-keys
+  "Walk `effective-parameters`, replacing values whose KEY came from
+   `runtime-params` (set lookup) with the redaction indicator. Keys
+   that came purely from translator / operator defaults retain their
+   original (public) value. Returns `{}` for nil input."
+  [effective-parameters runtime-params]
+  (let [runtime-keys (set (keys (or runtime-params {})))]
+    (reduce-kv
+     (fn [acc k v]
+       (assoc acc k
+              (if (contains? runtime-keys k)
+                (cond
+                  (nil? v) "<empty>"
+                  (and (string? v) (str/blank? ^String v)) "<empty>"
+                  :else "<provided>")
+                v)))
+     {}
+     (or effective-parameters {}))))
 
 (defn- flatten-pipeline
   "Squash a Jenkins pipeline IR's stages + post hooks into the linear
@@ -216,6 +271,17 @@
                 ;; AN8-2: surface the parameters resolution in the
                 ;; effect log so operators see exactly which defaults
                 ;; flowed in from where. No-op when feature off.
+                ;;
+                ;; v0.6.2 security: runtime-param VALUES are redacted
+                ;; (names only) because they originate in the REST
+                ;; trigger body and may carry secrets. The effect
+                ;; payload is persisted + rendered into /consoleText;
+                ;; without this redaction, a REST trigger of
+                ;; {"PASSWORD": "hunter2"} would land on disk and in
+                ;; the build's console log. See `redact-runtime-values`
+                ;; + `redact-effective-runtime-keys` above for the
+                ;; redaction shape (names preserved, values replaced
+                ;; with `<provided>` / `<empty>` indicators).
                 _ (when params-feature-on?
                     (swap! (:effects dispatcher)
                            conj
@@ -223,8 +289,9 @@
                             {:job-name job-name
                              :translator-defaults (or translator-defaults {})
                              :operator-defaults (or operator-defaults {})
-                             :runtime-params (or parameters {})
-                             :effective effective-parameters}]))
+                             :runtime-params (redact-runtime-values parameters)
+                             :effective (redact-effective-runtime-keys
+                                         effective-parameters parameters)}]))
                 ;; AN5-2 + AN7-4: probe every `@Library` coordinate.
                 ;; AN7-4 extends AN5-2: tries Git resolution first
                 ;; (clones from :anvil.libs/remotes in anvil.edn, cached

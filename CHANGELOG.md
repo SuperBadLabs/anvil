@@ -1,5 +1,89 @@
 # anvil — changelog
 
+## 0.6.2 — security: Vault path traversal + runtime-param leak (2026-06-08)
+
+Security patch release covering two issues shipped in v0.6.0 / v0.6.1.
+**Operators should upgrade.** Neither requires a config change.
+
+### Patch 1 — Vault `read-url` path traversal
+
+`anvil.secrets.vault/read-url` interpolated the `credentialsId` into
+the GET URL with no validation and no URL-encoding. A `credentialsId`
+of `"../../../sys/wrapping/unwrap"` constructed a URL hitting
+Vault's `sys/*` endpoints. Even when Vault returned 403 the *status*
+leaked path existence (403 vs 404), and a non-percent-encoded `?` /
+`#` in an id could smuggle query / fragment into the URL.
+
+**Fix.** `invalid-id?` rejects ids that:
+
+- are non-string / blank / nil
+- contain any `..` path segment
+- begin with `/` (would escape the configured mount + prefix)
+- contain a NUL byte
+
+Rejection happens BEFORE any I/O and is logged at WARN with
+`reason :invalid-id`. The protocol contract is preserved: `resolve!`
+returns `nil` for an invalid id, which the dispatcher already turns
+into a `:credential-unresolved` effect. `encode-id` percent-encodes
+each path segment via `URLEncoder` (UTF-8), so `?`, `#`, `+`, `%`,
+space, and other URL-unsafe characters can no longer escape the
+intended URL shape. `/` between segments survives (multi-segment ids
+like `team-a/gh-token` are a Vault-idiomatic shape under one prefix).
+
+**Tests.** `test/anvil/secrets/vault_test.clj` — 7 new tests:
+
+- `resolve-rejects-traversal-id-without-http` (asserts `send-get`
+  is NOT called for `../../../sys/wrapping/unwrap`)
+- `resolve-rejects-leading-slash-id`
+- `resolve-rejects-nul-byte-id`
+- `resolve-rejects-blank-and-nil-id`
+- `read-url-encodes-url-unsafe-chars` (space → `%20`, `+` → `%2B`,
+  `%` → `%25`, `#` → `%23`, `?` → `%3F`)
+- `read-url-preserves-multi-segment-ids`
+
+### Patch 2 — runtime-param secret leak into build effects
+
+`anvil.web.jenkins-api.runner/run-build!` emitted a
+`[:parameters/defaults-applied <payload>]` effect that dumped
+`runtime-params` (the REST-trigger body) verbatim into the dispatcher's
+effects vector. That vector is persisted to the build's DB row AND
+rendered into `/consoleText`, so a REST trigger of
+`{"PASSWORD": "hunter2"}` landed the secret on disk + in the console
+log. The dispatcher's `:secrets` masker only covers values that flowed
+through `withCredentials`; trigger-time params bypass that masker.
+
+**Fix.** `redact-runtime-values` replaces every runtime-param VALUE
+with a `<provided>` or `<empty>` indicator — names are preserved so
+operators can still audit which params were supplied.
+`redact-effective-runtime-keys` walks the merged effective-parameters
+map and redacts only the keys that came from `runtime-params`;
+translator + operator defaults (public Jenkinsfile / anvil.edn config)
+stay readable in the effect payload.
+
+Build behavior is unchanged: the runtime values still flow into
+`ctx :parameters` and env vars for the build itself. Only the
+*observability* surface (the persisted effect payload) is redacted.
+
+**Tests.** `test/anvil/web/jenkins_api/runtime_param_redaction_test.clj`
+— 4 new tests (23 assertions):
+
+- `redact-runtime-values-replaces-every-value` (uniform redaction,
+  names preserved)
+- `redact-runtime-values-never-emits-secret-literal` (`pr-str` of
+  the redacted map contains no value literal)
+- `redact-effective-runtime-keys-only-redacts-runtime-keys`
+  (translator-only key retains its value)
+- `run-build-redacts-runtime-param-values-in-effect` (end-to-end —
+  drives `run-build!` with `{"PASSWORD": "hunter2"}` and asserts the
+  persisted effect payload contains the name but never the value)
+
+### Receipt
+
+Combined vault + parameters + jenkins-api suites: 39 tests / 90
+assertions green. No new reflection warnings.
+
+---
+
 ## 0.6.1 — AN8-4 non-fatal-on-populated-workspace heuristic (2026-06-08)
 
 Patch release for the regression the v0.6.0 dirty-dozen rerun
