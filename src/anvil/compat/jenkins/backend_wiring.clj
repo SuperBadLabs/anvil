@@ -42,7 +42,8 @@
             [clojure.string :as str]
             [chengis.engine.backend :as backend]
             [chengis.engine.backend.docker :as docker]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [anvil.build-overrides :as build-overrides]))
 
 ;; ---------------------------------------------------------------------------
 ;; Backend selection
@@ -167,11 +168,18 @@
    corresponding `-v host:container:ro` flags are appended to extra-args
    so the docker backend mounts credential files read-only.
 
-   AN7-5: `--memory=`, `--cpus=`, `--pids-limit=`, `--cpu-shares=` in the
+   AN7-5a: `--memory=`, `--cpus=`, `--pids-limit=`, `--cpu-shares=` in the
    agent's args string are parsed into chengis-core's structured
    `:resource-limits`. This is the path that makes
    `agent { docker { image '…' args '--memory=4g' } }` actually request
    the memory cap.
+
+   AN7-5b: If `anvil.edn`'s `:anvil.build-overrides` map contains an
+   entry for this build's `:job-name`, the override's
+   `:docker-resource-limits` are merged on top of the parsed resource
+   limits (operator wins). This lets operators tune resource caps without
+   touching the upstream Jenkinsfile — the path the wild-corpus heavies
+   need since none of them declare docker args in their pipelines.
 
    Constructing a `DockerBackend` is cheap (no docker daemon contact
    until `prepare-workspace`), so it's safe to construct one per step
@@ -182,6 +190,9 @@
   (if-let [docker-spec (docker-agent-spec (:active-agent ctx))]
     (let [base-extra-args (or (:extra-args docker-spec) "")
           {:keys [resource-limits residual-extra-args]} (parse-resource-limits base-extra-args)
+          override (build-overrides/for-job (:job-name ctx))
+          override-limits (:docker-resource-limits override)
+          merged-limits (merge resource-limits override-limits)
           file-mount-args (file-mounts->extra-args (:file-mounts ctx))
           ;; Concatenate the residual (post-parse) extra-args with the -v flags.
           ;; The parsed resource flags are now in `resource-limits` and will
@@ -195,7 +206,7 @@
        (cond-> {:image (:image docker-spec)
                 :mode :per-step
                 :extra-args (when-not (str/blank? extra-args-str) extra-args-str)}
-         (seq resource-limits) (assoc :resource-limits resource-limits))))
+         (seq merged-limits) (assoc :resource-limits merged-limits))))
     (backend/local-shell-backend {})))
 
 ;; ---------------------------------------------------------------------------
@@ -312,6 +323,24 @@
             (env-flags env)
             [image "sh" "-c" cmd]))))
 
+(defn apply-build-overrides
+  "Merge any `:env-extra` from the operator's build-overrides config on top
+   of the ctx's :env. Resource-limit overrides are handled inside
+   `backend-for-ctx`; env-extra has to be applied here so both the
+   chengis-core path and the inline-docker path see the merged env.
+
+   Operator override wins on key collision (override merged on top of
+   existing env). Returns the (possibly-modified) ctx. No-op when no
+   override is configured (the common case). Exposed (not private) so
+   tests can lock down the merge behavior without driving a whole
+   subprocess execution."
+  [ctx]
+  (if-let [extra (some-> (:job-name ctx)
+                         build-overrides/for-job
+                         :env-extra)]
+    (update ctx :env (fn [env] (merge env extra)))
+    ctx))
+
 (defn- execute-inline-docker
   "Direct `docker run --rm` invocation for the file-credential case
    (see ns-level comment). Honors :timeout-deadline and :log-file the
@@ -400,17 +429,18 @@
    /anvil-creds/<id>."
   ([cmd ctx] (execute-via-backend cmd ctx nil))
   ([cmd ctx mask-values]
-   (cond
-     (and (seq (:file-mounts ctx))
-          (docker-agent-spec (:active-agent ctx)))
-     (execute-inline-docker cmd ctx)
+   (let [ctx (apply-build-overrides ctx)]
+     (cond
+       (and (seq (:file-mounts ctx))
+            (docker-agent-spec (:active-agent ctx)))
+       (execute-inline-docker cmd ctx)
 
-     :else
-     (let [backend-inst (backend-for-ctx ctx)
-           build-spec {:workspace-path (or (:workspace ctx) (:cwd ctx))
-                       :job-name (:job-name ctx)
-                       :build-number (:build-number ctx)
-                       :env (:env ctx {})}
+       :else
+       (let [backend-inst (backend-for-ctx ctx)
+             build-spec {:workspace-path (or (:workspace ctx) (:cwd ctx))
+                         :job-name (:job-name ctx)
+                         :build-number (:build-number ctx)
+                         :env (:env ctx {})}
            prep (backend/prepare-workspace backend-inst build-spec)]
        (if (= :failed (:result prep))
          (do (log/warn (str "anvil.backend-wiring: prepare-workspace failed: "
@@ -428,4 +458,4 @@
                ;; Cleanup is best-effort. Failing here would mask a real
                ;; step failure or success.
                (log/warn t "anvil.backend-wiring: cleanup failed; continuing")))
-           (result->shell-execute-shape result step-spec)))))))
+           (result->shell-execute-shape result step-spec))))))))
