@@ -69,16 +69,27 @@
           ;; AN7-3: :file credential — store the host path as value.
           ;; Validate the path exists and is readable before storing.
           (= ctype :file)
-          (let [path (:path options)]
+          (let [raw-path (:path options)
+                path (when raw-path (str/trim raw-path))]
             (cond
               (str/blank? path)
               (do (println "Error: --path is required for --type file")
                   (println "  Example: anvil secrets add my-key --type file --path /run/secrets/keyring.asc")
                   3)
 
+              (not (.exists (java.io.File. ^String path)))
+              (do (println (str "Error: path does not exist: " path))
+                  (println "  Ensure the file exists before registering a file credential.")
+                  3)
+
+              (not (.isFile (java.io.File. ^String path)))
+              (do (println (str "Error: path is not a regular file: " path))
+                  (println "  Directories are not valid file credentials; specify the exact file path.")
+                  3)
+
               (not (.canRead (java.io.File. ^String path)))
               (do (println (str "Error: file not readable: " path))
-                  (println "  Ensure the path exists and anvil has read permission.")
+                  (println "  Ensure anvil has read permission on the file.")
                   3)
 
               :else

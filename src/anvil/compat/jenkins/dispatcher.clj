@@ -1058,19 +1058,20 @@
          (not (and credential-id value))
          [env masks unresolved file-mounts]
 
-         ;; AN7-3: :file credential — host path in :value, mount into
-         ;; /anvil-creds/<id>. Env var (from `variable:`) → container path.
+         ;; AN7-3: :file credential — host path in :value. Mount into
+         ;; /anvil-creds/<id> for docker agents (see h-with-credentials which
+         ;; resolves the correct env-var value based on the active agent).
          ;; The host path is NOT masked (it's a filesystem path, not a secret).
          is-file?
          (let [var-name (:string vars)
                container-path (file-credential-container-path credential-id)
-               env' (cond-> env
-                      var-name (assoc var-name container-path))
+               ;; NOTE: env var is NOT set here — h-with-credentials sets it
+               ;; to the correct path after checking docker vs non-docker.
                mount {:host-path value
                       :container-path container-path
                       :credential-id credential-id
                       :var-name var-name}]
-           [env' masks unresolved (conj file-mounts mount)])
+           [env masks unresolved (conj file-mounts mount)])
 
          ;; usernamePassword: split `user:pass`, bind each half + the combined
          is-up?
@@ -1114,7 +1115,20 @@
         old-secrets @(:secrets this)
         new-secrets (into old-secrets added-secrets)
         old-env (:env ctx {})
-        new-env (merge old-env env-additions)
+        ;; AN7-3: resolve file-mount env var values based on agent type.
+        ;; For docker agents: env var → /anvil-creds/<id> (the container
+        ;; path where the file is mounted). For non-docker agents: env var
+        ;; → the host path directly (file is on the executor's filesystem
+        ;; and no mount happens). This matches Jenkins's behavior.
+        docker-agent? (boolean (docker-spec ctx))
+        file-env-additions (reduce (fn [m {:keys [host-path container-path var-name]}]
+                                     (if var-name
+                                       (assoc m var-name
+                                              (if docker-agent? container-path host-path))
+                                       m))
+                                   {}
+                                   file-mounts)
+        new-env (merge old-env env-additions file-env-additions)
         ;; AN7-3: merge file-mounts into ctx so shell-execute (via
         ;; backend-wiring) can add -v flags to the docker invocation.
         old-file-mounts (:file-mounts ctx [])
