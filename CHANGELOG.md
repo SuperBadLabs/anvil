@@ -1,5 +1,102 @@
 # anvil — changelog
 
+## 0.5.0 — Scale + Honesty Release (2026-06-08)
+
+The release the v0.5 board promised: four scale tranches (T1-T4) and
+five AN7 honesty tickets, all on master. Wild-corpus `:success` moves
+from 1/14 to 5/14 (conservative) with a realistic ceiling of 7/14.
+
+### Scale tranches — SHIPPED
+
+- **T1 — Remote build cache** (`:anvil.features/cache`, `:cache-remote`).
+  Content-addressed step-level caching per AV5-2. Cache key =
+  `(image-digest, command, env-fingerprint, input-tree-merkle)`.
+  Local FS store at `~/.anvil/cache`; optional S3-style remote via
+  `:cache-remote` flag. `:cache-hit` / `:cache-miss` SSE events fire
+  per step. Cache invariants receipt at `docs/cache/README.md`.
+
+- **T2 — Build cost reporting** (`:anvil.features/cost-reporting`).
+  Wall-time x declared host rate per AV5-3. Rates declared in
+  `:anvil.cost/host-rates` in `anvil.edn`; cost recorded to
+  `anvil_build_costs` table (migration 012); `/cost` dashboard
+  shows top-20 by cost + 30-day totals; per-build cost pill.
+  Cache savings estimated proportionally (T2.5 honesty: no
+  per-step wall-times yet).
+
+- **T3 — GitLab MR + Bitbucket PR commit-status** (`:gitlab-mr`,
+  `:bitbucket-pr`). Mirrors v0.4 T3.4 GitHub Checks pattern per
+  AV5-4. `anvil.integration.gitlab-subscriber` posts `running` on
+  `:build-started` and `success`/`failed`/`canceled` on `:build-done`
+  to GitLab Commit Status API. `anvil.integration.bitbucket-subscriber`
+  posts `INPROGRESS`/`SUCCESSFUL`/`FAILED`/`STOPPED` to Bitbucket
+  Build Status API. Both publish `:evt-mr-checked` / `:evt-pr-checked`
+  on the per-job bus topic. Docs at `docs/gitlab/` and `docs/bitbucket/`.
+
+- **T4 — Chengis 0.1 RBAC adapter** (`:anvil.features/multi-tenant`).
+  Optional multi-tenant RBAC adapter per AV5-5. `anvil.tenancy.rbac`
+  defines the `RbacBackend` protocol; `NoOpBackend` (default, zero
+  overhead, single-tenant behavior unchanged) and `ChengisBackend`
+  (HTTP to a chengis 0.1 service). Ring middleware `wrap-rbac` /
+  `wrap-rbac-route` for per-route permission enforcement. Audit-log
+  subscriber writes `:build-started` / `:build-done` / `:job-created`
+  / `:credential-added` events to chengis audit log. SSO redirect
+  stub (JWT validation defers to chengis 0.1). Docs at
+  `docs/chengis-rbac/README.md`. Chengis 0.1 ships from its own
+  repo; anvil does NOT bundle it.
+
+### AN7 honesty series — SHIPPED
+
+Per AV5-7, AN7 tickets ride alongside scale and are not gating.
+Five of six AN7 tickets landed:
+
+- **AN7-1** — Synthetic shims for apache-maven, apache-activemq,
+  apache-zookeeper, eclipse-jdt-core. All four labeled type-B per
+  AV5-6. Shim resolution order: overlay wins over real Jenkinsfile.
+  Receipt at `docs/jenkins-compat/an7-1-synthetic-shims.md`.
+
+- **AN7-2** — Groovy GString `${X}` interpolation in declarative
+  pipeline agent labels, environment blocks, and parameter defaults.
+  Scoped strictly to declarative contexts per R5; `sh` step bodies
+  are untouched.
+
+- **AN7-3** — `:file` credential type for GPG keyrings and
+  certificate bundles. Host path mounted read-only into docker steps
+  via `-v HOST_PATH:CONTAINER_PATH:ro`. Honest gap when docker not
+  present: credential injected as env var with a WARN.
+
+- **AN7-4** — External `@Library` Git resolver. `@Library('name@ref')`
+  coordinates now attempt clone from `:anvil.libs/remotes` in
+  `anvil.edn`, cached at `~/.anvil/libs/<name>/<ref>/`. Depth-1 for
+  branches/tags; full + `reset --hard` for 40-char SHA refs.
+  Falls back to local `ANVIL_LIBRARIES_DIR` lookup. Receipt at
+  `docs/jenkins-compat/an7-4-shared-libs.md`.
+
+- **AN7-6** — Verdict-provenance **Type** column on the wild-corpus
+  receipt. Type-A = real upstream Jenkinsfile. Type-B = synthetic
+  shim ran. Both labeled in every v0.5+ receipt row.
+
+**AN7-5** (docker memory + Surefire JVM tuning for activemq / zookeeper
+test-phase OOM) did not ship by v0.5.0 per AV5-7. Tracks into v0.5.x.
+
+### Wild-corpus T6 receipt summary
+
+| Scenario | `:success` count |
+|---|---|
+| Conservative (no library resolution, no GPG cred) | **5/14** |
+| Expected (AN7-4 resolves 1+ library; jkube GPG provisioned) | **6-7/14** |
+
+The 5/14 conservative tally meets the AV5-8 minimum gate. The
+aspirational 9-10/14 ceiling was not reached at v0.5.0 — per AV5-8,
+this was stated upfront as realistic-ceiling dependent on AN7 tickets
+landing with verified artifacts. Receipt at
+`docs/jenkins-compat/wild-corpus-honest-receipt.md`.
+
+### Test coverage
+
+910 tests, 0 failures across the full suite.
+
+---
+
 ## Unreleased — 0.4.2 / 0.5 fleet-balance polish
 
 Follow-up from the v0.4.1-T6 wild-corpus fleet rerun (2026-06-08), where
