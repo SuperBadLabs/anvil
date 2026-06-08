@@ -78,7 +78,9 @@
 ;; eclipse-mojarra stays excluded (k8s + YAML; needs the kubernetes
 ;; agent runtime which is v0.6 territory per the v0.4 board).
 (def dirty-dozen
-  [{:name "apache-activemq"      :scm-url "https://github.com/apache/activemq.git" :branch "main"}
+  [{:name "apache-activemq"      :scm-url "https://github.com/apache/activemq.git" :branch "main"
+    :shimmed? true
+    :notes "AN7-1: real Jenkinsfile lands ~200 jars then test phase OOMs (-1); shim runs `mvn install -DskipTests` to land artifacts cleanly. Receipt: docs/jenkins-compat/an7-1-synthetic-shims.md"}
    {:name "apache-camel"         :scm-url "https://github.com/apache/camel.git" :branch "main"}
    {:name "apache-camel-quarkus" :scm-url "https://github.com/apache/camel-quarkus.git" :branch "main"}
    {:name "apache-cassandra"     :scm-url "https://github.com/apache/cassandra.git" :branch "trunk"
@@ -90,19 +92,50 @@
     :heavyweight? true
     :notes "Long-runner — bump --max-minutes ≥ 90 (AN6-6)."}
    {:name "apache-maven"         :scm-url "https://github.com/apache/maven.git" :branch "master"
-    :notes "AN6-4: shared-lib mavenBuild step is :unsupported with workaround in docs/jenkins-compat/an6-4-mavenbuild-receipt.md"}
+    :shimmed? true
+    :notes "AN6-4 + AN7-1: shared-lib mavenBuild() step is :unsupported pending AN7-4 (external @Library loader); AN7-1 shim runs vanilla `mvn install -DskipTests`. Receipt: docs/jenkins-compat/an7-1-synthetic-shims.md"}
    {:name "apache-streampipes"   :scm-url "https://github.com/apache/streampipes.git" :branch "dev"}
-   {:name "apache-zookeeper"     :scm-url "https://github.com/apache/zookeeper.git" :branch "master"}
+   {:name "apache-zookeeper"     :scm-url "https://github.com/apache/zookeeper.git" :branch "master"
+    :shimmed? true
+    :notes "AN7-1: real Jenkinsfile builds 143 jars then test phase fails; shim runs `mvn install -DskipTests`. Receipt: docs/jenkins-compat/an7-1-synthetic-shims.md"}
    {:name "eclipse-epsilon"      :scm-url "https://github.com/eclipse/epsilon.git" :branch "main"}
-   {:name "eclipse-jdt-core"     :scm-url "https://github.com/eclipse-jdt/eclipse.jdt.core.git" :branch "master"}
+   {:name "eclipse-jdt-core"     :scm-url "https://github.com/eclipse-jdt/eclipse.jdt.core.git" :branch "master"
+    :shimmed? true
+    :notes "AN7-1: real Jenkinsfile builds 927 jars (largest in corpus) then test phase fails; shim runs `mvn package -DskipTests`. Receipt: docs/jenkins-compat/an7-1-synthetic-shims.md"}
    {:name "eclipse-jkube"        :scm-url "https://github.com/eclipse-jkube/jkube.git" :branch "master"
     :notes "AN6-5: secret-subkeys.asc credential workaround in docs/secrets/gpg-subkey.md"}
    {:name "hibernate-orm"        :scm-url "https://github.com/hibernate/hibernate-orm.git" :branch "main"}
    {:name "hibernate-search"     :scm-url "https://github.com/hibernate/hibernate-search.git" :branch "main"}])
 
+;; AN7-1 shim overlay: hand-authored Jenkinsfile shims for known-failing
+;; wild-corpus builds. Per AV5-6, these are explicitly type-B `:success` —
+;; anvil dispatches the synthetic, real artifacts land on disk, classifier
+;; verdict is honest, but the original project's CI semantics aren't
+;; preserved (e.g. tests skipped, shared-lib calls bypassed). The receipt
+;; provenance column at AN7-6 distinguishes type-A (real Jenkinsfile) from
+;; type-B (shimmed). The shim layer is intentionally hierarchical:
+;;
+;;   1. `resources/anvil/config/wild-corpus-shims/<name>.Jenkinsfile` —
+;;      version-controlled shims that ship with the repo
+;;   2. `<corpus-root>/<name>/Jenkinsfile` — the real upstream Jenkinsfile
+;;      (operator-staged via the AN5-RERUN runbook)
+;;
+;; Shims win. When AN7-4 (external @Library loader) and AN7-3 (file
+;; credentials) close their respective gaps, the matching shims should
+;; be deleted so the real Jenkinsfiles take over.
+(def ^:private shim-root
+  ;; Resolved relative to where the script is invoked from (lein project
+  ;; root). Tests pass an absolute path via SHIM_ROOT.
+  (or (System/getenv "WILD_CORPUS_SHIM_ROOT")
+      "resources/anvil/config/wild-corpus-shims"))
+
 (defn- jenkinsfile-for [name]
-  (let [f (fs/file corpus-root name "Jenkinsfile")]
-    (when (fs/exists? f) (slurp (fs/file f)))))
+  (let [shim (fs/file shim-root (str name ".Jenkinsfile"))
+        real (fs/file corpus-root name "Jenkinsfile")]
+    (cond
+      (fs/exists? shim) (slurp (fs/file shim))
+      (fs/exists? real) (slurp (fs/file real))
+      :else nil)))
 
 (defn- register-job! [host {:keys [name scm-url branch]}]
   (let [body (json/encode {:name (str "wild-" name)
