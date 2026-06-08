@@ -177,13 +177,23 @@
     ;; When on, credentials resolved via withCredentials hit Vault
     ;; before the local-disk fallback. Operator configures via
     ;; :anvil.vault/url + :anvil.vault/token-path in anvil.edn.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). The flag default-on is safe because the install! path
+    ;; refuses to take over without operator config (:anvil.vault/url
+    ;; + :token-path) — when those are absent, the local-disk backend
+    ;; remains active and behavior is bit-identical to v0.5.x.
     :vault-backend
 
     ;; :cloud-kms-backend — T2. anvil.secrets.kms adapter (AV6-3).
     ;; SecretBackend protocol impl backed by Cloud KMS (AWS-first;
     ;; GCP + Azure stubs in v0.6.x). Encrypted blob lives in
-    ;; anvil.edn / Git; KMS decrypts at resolve time. Closed-by-
-    ;; default; operator opts in per-deployment.
+    ;; anvil.edn / Git; KMS decrypts at resolve time.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). Same safety as :vault-backend — without operator config
+    ;; (:anvil.kms/provider + region + blobs) the install! path no-ops
+    ;; with a WARN; the local-disk backend stays active.
     :cloud-kms-backend
 
     ;; :dockerfile-multistage — T3. Multi-stage Dockerfile support
@@ -206,6 +216,31 @@
     ;; through T5 ship; flipped to true once AN8-4 receipt lands.
     :scm-checkout-lifecycle})
 
+(def default-on-features
+  "Features whose **default** is `true` rather than `false`.
+
+   Used when a tranche ships and the tranche owner decides the new
+   behavior should be on out-of-the-box (because it's strictly
+   additive — same code path on the disabled side as before, just
+   more honored shapes on the enabled side). Listed here, the flag
+   defaults to true *unless* anvil.edn explicitly sets it false.
+
+   Closed-by-default remains the rule for features that change
+   observable behavior for existing builds — those stay off until
+   the operator opts in.
+
+   Currently graduated:
+     :vault-backend     — v0.6 T2. install! refuses to take over
+                          without operator config; without
+                          :anvil.vault/url + :token-path in
+                          anvil.edn, the local-disk backend stays
+                          active and behavior is bit-identical to
+                          v0.5.x.
+     :cloud-kms-backend — v0.6 T2. Same posture as :vault-backend
+                          — install! no-ops without :anvil.kms
+                          config; local-disk stays active."
+  #{:vault-backend :cloud-kms-backend})
+
 (def ^:private flag-ns "anvil.features")
 
 (defn- flag-keyword
@@ -221,28 +256,39 @@
    values into the in-process registry. Idempotent — re-calling
    re-reads the file. Returns the resulting flag map for logging.
 
-   Unknown flags in the file are ignored (forward-compat). Missing
-   flags are recorded as `false`."
+   Unknown flags in the file are ignored (forward-compat). For flags
+   missing from anvil.edn, the per-flag default applies:
+   `default-on-features` membership → true; otherwise → false."
   []
   (let [edn (config/load-edn "anvil" {})
         flags (into {}
                     (for [f known-features]
-                      [f (boolean (get edn (flag-keyword f) false))]))
+                      [f (boolean (get edn (flag-keyword f)
+                                       (contains? default-on-features f)))]))
         on (filter #(get flags %) known-features)]
     (reset! state flags)
     (log/info (str "anvil.features: "
                    (if (seq on)
                      (str (count on) "/" (count known-features)
                           " enabled — " (pr-str (sort on)))
-                     (str "all " (count known-features) " disabled (v0.3 default)"))))
+                     (str "all " (count known-features) " disabled"))))
     flags))
 
 (defn enabled?
   "True if feature `f` (one of `known-features`) is enabled. Unknown
    features return `false` — closed-by-default protects against a
-   feature being queried before its flag was registered."
+   feature being queried before its flag was registered.
+
+   When the registry is unloaded (before `load-flags!` runs, or in
+   bare-bones unit tests that don't touch anvil.edn), features in
+   `default-on-features` still report `true`. This matches the
+   post-load-flags! behavior so production and test see the same
+   answer for default-on flags."
   [f]
-  (boolean (get @state f false)))
+  (let [s @state]
+    (if (contains? s f)
+      (boolean (get s f))
+      (contains? default-on-features f))))
 
 (defn set!
   "Test helper: force a flag on or off without going through anvil.edn.
