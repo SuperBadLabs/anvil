@@ -138,20 +138,30 @@
    needing these synthetic markers; the markers become observability
    sugar at that point."
   [pipeline-ir]
-  (let [top-agent (:agent pipeline-ir)]
+  (let [top-agent (:agent pipeline-ir)
+        top-tools (:tools pipeline-ir)]
     (update pipeline-ir :stages
             (fn [stages]
               (mapv (fn [stage]
                       (let [eff (agent-spec top-agent (:agent stage))
-                            stage-name (:name stage)]
+                            ;; AN8-1: stage-level :tools overrides
+                            ;; pipeline-level for this stage. The dispatcher
+                            ;; reads :tools off the synthetic enter step to
+                            ;; resolve the docker image via
+                            ;; :anvil.tools/images in anvil.edn.
+                            eff-tools (or (:tools stage) top-tools)
+                            stage-name (:name stage)
+                            enter (cond-> {:type :jenkins/agent-stage-enter
+                                           :stage stage-name
+                                           :agent eff}
+                                    (seq eff-tools) (assoc :tools eff-tools))
+                            leave {:type :jenkins/agent-stage-leave
+                                   :stage stage-name
+                                   :agent eff}]
                         (update stage :steps
                                 (fn [steps]
                                   (vec (concat
-                                        [{:type :jenkins/agent-stage-enter
-                                          :stage stage-name
-                                          :agent eff}]
+                                        [enter]
                                         (or steps [])
-                                        [{:type :jenkins/agent-stage-leave
-                                          :stage stage-name
-                                          :agent eff}]))))))
+                                        [leave]))))))
                     stages)))))

@@ -196,6 +196,29 @@
     ;; cassandra-real's multi-stage dockerfile agent.
     :dockerfile-multistage
 
+    ;; :tools-directive — AN8-1. Honor `tools { maven 'X' jdk 'Y' }`
+    ;; by mapping the surface to a pre-baked docker image via
+    ;; :anvil.tools/images in anvil.edn (operator-curated; anvil never
+    ;; provisions toolchains itself). Without the flag the dispatcher
+    ;; ignores the tools block; with it on, a stage with a resolvable
+    ;; tools spec runs in the mapped image, an unresolvable one emits
+    ;; a :tools/unmapped effect with candidate keys and falls back to
+    ;; the agent the Jenkinsfile declared. Closed-by-default through
+    ;; AN8-1 ship; flipped to true once a v0.6.x receipt confirms the
+    ;; mapping unblocks at least one wild-corpus heavy.
+    :tools-directive
+
+    ;; :parameters-defaults — AN8-2. Propagate
+    ;; `parameters { choice(name:'X', choices:['a','b']) }` defaults
+    ;; into ctx :parameters BEFORE the build runs, so downstream
+    ;; expression like `params.X`, `agent { label { label params.X } }`,
+    ;; and `${X}` GString interpolation resolve to the first choice
+    ;; (or :defaultValue if declared). Operator overrides via REST
+    ;; trigger payload + :anvil.parameters/defaults per-job continue
+    ;; to win. Without the flag, ctx :parameters stays bare and the
+    ;; AN7-5c receipt's apache-activemq nodeLabel failure mode persists.
+    :parameters-defaults
+
     ;; :scm-checkout-lifecycle — AN8-4. Universal fidelity fix —
     ;; declarative pipelines without an explicit `checkout scm` step
     ;; get an implicit checkout BEFORE stage 1 runs (matches Jenkins's

@@ -42,9 +42,14 @@
 (def v0-6-runtime-flags
   "v0.6 board T0.1 reservations: K8s agent runtime + Vault + Cloud-KMS
    secret backends + multi-stage Dockerfile + SCM-checkout-lifecycle.
+   AN8-1 + AN8-2 fidelity flags (:tools-directive, :parameters-defaults)
+   ride here too — they're closed-by-default until each receipt lands
+   per the same AV6-7 acceptance posture.
+
    Closed-by-default until each tranche merges per AV6-7."
   #{:k8s-agent :vault-backend :cloud-kms-backend
-    :dockerfile-multistage :scm-checkout-lifecycle})
+    :dockerfile-multistage :scm-checkout-lifecycle
+    :tools-directive :parameters-defaults})
 
 (deftest known-features-covers-the-seven-v0-3-tranches
   (testing "v0.3 board T1–T7 each have a reserved flag"
