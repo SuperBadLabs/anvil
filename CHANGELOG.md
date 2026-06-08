@@ -80,6 +80,25 @@ default until each tranche merges.
 Tracks until v0.6.0 tag; see board for week cadence + locked
 decisions (AV6-1..9).
 
+### Shipped in v0.6 (incremental, on `master` ahead of the 0.6.0 cut)
+
+- **T3 — multi-stage Dockerfile container-as-step.** Behind
+  `:anvil.features/dockerfile-multistage` (graduated to default-on at
+  ship; first member of `default-on-features`). Translator lifts
+  `agent { dockerfile { args '--target X' } }` (and the
+  `additionalBuildArgs '...'` alias) into `:dockerfile {:target X
+  :args ... :dir ...}`. `anvil.tools.dockerfile/ensure-image!` folds
+  `:target` into the image-tag hash AND forwards it to
+  `docker build --target X`. `:dir` reroots the build context to
+  `<workspace>/<dir>`. Cache key is now `(Dockerfile-content +
+  COPY/ADD-sources-merkle + --target)`: same triple → cache hit,
+  no rebuild; differ → bust. Every honored build emits a
+  `:dockerfile-built` SSE event on `[:build <job> <n>]` carrying
+  `:cache-hit?`, `:image-tag`, `:target`, `:duration-ms`. Receipt:
+  `docs/container-step/multi-stage-dockerfile.md`. Closes T3.1-T3.3
+  + T3.5 of the v0.6 board; T3.4 (wild-corpus-shim wiring) is a
+  v0.6.x follow-up.
+
 ---
 
 ## 0.5.0 — Scale + Honesty Release (2026-06-08)

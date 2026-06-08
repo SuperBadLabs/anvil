@@ -36,15 +36,15 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core v0.4.0
+      - name: Install chengis-core v0.4.1
         run: |
-          # chengis-core 0.4.0 ships the Kubernetes execution backend
+          # chengis-core 0.4.1 ships the Kubernetes execution backend
           # (chengis.engine.backend.k8s) that anvil v0.6 T1 routes
           # `agent { kubernetes { … } }` through. Pinned install —
           # bump version + tag together when chengis-core ships the
           # next minor.
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch v0.4.0 \
+          git clone --depth 1 --branch v0.4.1 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 
@@ -87,15 +87,15 @@ jobs:
           key: ${{ runner.os }}-m2-anvil-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-m2-anvil-
 
-      - name: Install chengis-core v0.4.0
+      - name: Install chengis-core v0.4.1
         run: |
-          # chengis-core 0.4.0 ships the Kubernetes execution backend
+          # chengis-core 0.4.1 ships the Kubernetes execution backend
           # (chengis.engine.backend.k8s) that anvil v0.6 T1 routes
           # `agent { kubernetes { … } }` through. Pinned install —
           # bump version + tag together when chengis-core ships the
           # next minor.
           rm -rf /tmp/chengis-core
-          git clone --depth 1 --branch v0.4.0 \
+          git clone --depth 1 --branch v0.4.1 \
             https://github.com/SuperBadLabs/chengis-core.git /tmp/chengis-core
           (cd /tmp/chengis-core && lein install)
 

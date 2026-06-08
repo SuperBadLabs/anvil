@@ -81,9 +81,14 @@ bb -Jmax-minutes=90 scripts/wild-corpus-rerun.bb
 
 ## Honest gaps remaining
 
-- **Multi-stage Dockerfiles** are not specially handled — the daemon
+- ~~**Multi-stage Dockerfiles** are not specially handled — the daemon
   builds the final target. Per-stage targeting (`--target=builder`)
-  is not exposed; v0.4.x territory.
+  is not exposed; v0.4.x territory.~~
+  **Shipped in v0.6 T3** behind `:anvil.features/dockerfile-multistage`
+  (default-on). `agent { dockerfile { args '--target X' } }` and
+  `additionalBuildArgs '--target X'` both lift `:target` into the
+  IR; the cache key + `docker build` argv both honor it. Receipt:
+  `docs/container-step/multi-stage-dockerfile.md`.
 - **Build args** (`docker build --build-arg`) — `agent { dockerfile {
   additionalBuildArgs '...' } }` is honored as `extra-args` passed
   to `build-image!` but the translator doesn't currently extract

@@ -22,6 +22,7 @@
             [anvil.compat.jenkins.agent :as agent]
             [anvil.compat.jenkins.env :as jenkins-env]
             [anvil.compat.jenkins.scm :as scm]
+            [anvil.compat.jenkins.scm-lifecycle :as scm-lifecycle]
             [anvil.web.jenkins-api.jobs :as jobs]
             [anvil.web.log-tail :as log-tail]))
 
@@ -163,7 +164,21 @@
                 ;; TX11B: expand matrix combinations (scripted-Pipeline files
                 ;; with .combinations { … } blocks need their templated
                 ;; stages materialized before dispatch).
-                pipeline-ir (mx/expand-matrices base-ir source)
+                expanded-ir (mx/expand-matrices base-ir source)
+                ;; AN8-4: declarative pipelines get an implicit
+                ;; `checkout scm` step prepended to stage 1 when the
+                ;; feature flag is on AND the Jenkinsfile doesn't
+                ;; already have an explicit checkout. The dispatcher's
+                ;; h-checkout actually calls scm/provision! against the
+                ;; job's :scm config (idempotent w/ the runner's
+                ;; pre-build provision — short-circuits on existing .git).
+                pipeline-ir (scm-lifecycle/inject-implicit-checkout
+                             expanded-ir
+                             {:scm (:scm job)
+                              :flag-enabled?
+                              (try ((requiring-resolve 'anvil.features/enabled?)
+                                    :scm-checkout-lifecycle)
+                                   (catch Throwable _ false))})
                 flat-stages (flatten-pipeline pipeline-ir)
                 flat {:stages (vec flat-stages)}
                 dispatcher (ad/make {:execute? execute?})
@@ -186,6 +201,7 @@
                      :log-file log-file
                      :build-number number
                      :job-name job-name
+                     :scm (:scm job)          ;; AN8-4: implicit checkout handler reads this
                      :parameters (or parameters {})}
                 result (d/run-pipeline flat dispatcher ctx)
                 effects @(:effects dispatcher)

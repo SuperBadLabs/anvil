@@ -190,10 +190,15 @@
     ;; for `agent { dockerfile { filename 'Dockerfile' dir '...'
     ;; args '--target prod' } }`. Builds upon the existing
     ;; :dockerfile-agent flag (v0.4 AN6-3). When on, the --target
-    ;; flag is honored and the chengis-core docker backend's
-    ;; :dockerfile-build step caches the image hash per (Dockerfile
+    ;; flag is honored and the image hash is computed per (Dockerfile
     ;; content + COPY/ADD sources + --target) tuple. Unblocks
     ;; cassandra-real's multi-stage dockerfile agent.
+    ;;
+    ;; **Graduated to default-on at v0.6.0** (see `default-on-features`
+    ;; below). When `:target` is nil the behavior is bit-identical to
+    ;; v0.4 AN6-3, so flipping default-on preserves all single-stage
+    ;; builds. Operators who want explicitly v0.5-shaped behavior can
+    ;; set `:anvil.features/dockerfile-multistage false` in anvil.edn.
     :dockerfile-multistage
 
     ;; :scm-checkout-lifecycle — AN8-4. Universal fidelity fix —
@@ -207,23 +212,35 @@
     :scm-checkout-lifecycle})
 
 (def default-on-features
-  "Features that default to `true` once their tranche has shipped (per
-   AV6-7 — flags gate routes only during in-progress; defaults flip
-   to on with the tranche-closing commit). Operators can still
-   explicitly set the flag to `false` in anvil.edn to opt out.
+  "Features whose **default** is `true` rather than `false`.
 
-   Adding a feature here is the closing-commit pattern for a tranche;
-   removing it (when the feature graduates fully) is the safe path
-   to also remove the flag from `known-features` in a later release."
-  #{
-    ;; v0.6 T1 — Kubernetes agent runtime. Defaults on with the
-    ;; tranche-closing commit per AV6-7. Operators on hosts without
-    ;; a reachable k8s cluster set
-    ;;   {:anvil.features/k8s-agent false}
-    ;; in anvil.edn to opt out; the dispatcher then degrades
-    ;; `agent { kubernetes { … } }` to :unsupported honestly instead
-    ;; of trying (and failing) to reach the cluster.
-    :k8s-agent})
+   Used when a tranche ships and the tranche owner decides the new
+   behavior should be on out-of-the-box (because it's strictly
+   additive — same code path on the disabled side as before, just
+   more honored shapes on the enabled side). Listed here, the flag
+   defaults to true *unless* anvil.edn explicitly sets it false.
+
+   Per AV6-7 — flags gate routes only during in-progress; defaults
+   flip to on with the tranche-closing commit. Adding a feature
+   here is the closing-commit pattern for a tranche; removing it
+   (when the feature graduates fully) is the safe path to also
+   remove the flag from `known-features` in a later release.
+
+   Closed-by-default remains the rule for features that change
+   observable behavior for existing builds — those stay off until
+   the operator opts in.
+
+   Currently graduated:
+     :dockerfile-multistage — v0.6 T3. Single-stage builds (no
+       `:target` in the IR) hash identically to v0.4 AN6-3, so
+       flipping default-on never changes a single-stage image tag.
+     :k8s-agent — v0.6 T1. Kubernetes agent runtime. Operators on
+       hosts without a reachable k8s cluster set
+       `{:anvil.features/k8s-agent false}` in anvil.edn to opt out;
+       the dispatcher then degrades `agent { kubernetes { … } }` to
+       :unsupported honestly instead of trying (and failing) to
+       reach the cluster."
+  #{:dockerfile-multistage :k8s-agent})
 
 (def ^:private flag-ns "anvil.features")
 
@@ -262,15 +279,24 @@
                    (if (seq on)
                      (str (count on) "/" (count known-features)
                           " enabled — " (pr-str (sort on)))
-                     (str "all " (count known-features) " disabled (v0.3 default)"))))
+                     (str "all " (count known-features) " disabled"))))
     flags))
 
 (defn enabled?
   "True if feature `f` (one of `known-features`) is enabled. Unknown
    features return `false` — closed-by-default protects against a
-   feature being queried before its flag was registered."
+   feature being queried before its flag was registered.
+
+   When the registry is unloaded (before `load-flags!` runs, or in
+   bare-bones unit tests that don't touch anvil.edn), features in
+   `default-on-features` still report `true`. This matches the
+   post-load-flags! behavior so production and test see the same
+   answer for default-on flags."
   [f]
-  (boolean (get @state f false)))
+  (let [s @state]
+    (if (contains? s f)
+      (boolean (get s f))
+      (contains? default-on-features f))))
 
 (defn set!
   "Test helper: force a flag on or off without going through anvil.edn.

@@ -29,6 +29,7 @@
             [anvil.compat.jenkins.runtime :as runtime]
             [anvil.compat.jenkins.plugins :as plugins]
             [anvil.compat.jenkins.agent :as agent]
+            [anvil.compat.jenkins.scm :as scm]
             [anvil.compat.jenkins.shared-libs :as shared-libs]))
 
 (declare ^:private dispatch-fn run-body propagate-or-ok h-sh)
@@ -718,10 +719,71 @@
                                    :note "recorder-only — no :workspace + :stash-root in ctx"}])
           (ok ctx)))))
 
-(defn- h-checkout [d step ctx]
-  (log-effect d [:checkout {:spec (or (:spec step) (:ref step))
-                            :args (:args step)}])
-  (ok ctx))
+(defn- h-checkout
+  "Handle `:jenkins/checkout` steps.
+
+   For explicit checkouts (user wrote `checkout scm` or
+   `checkout([...])` in the Jenkinsfile) — record an effect and
+   return ok. The runner's pre-build `scm/provision!` already
+   populated the workspace; we don't want to re-clone mid-build.
+
+   For AN8-4 implicit checkouts (synthesized by
+   `anvil.compat.jenkins.scm-lifecycle/inject-implicit-checkout`
+   when the feature flag is on) — actively call `scm/provision!`
+   against the `:scm` config on the step (or in ctx). This closes
+   the workspace-empty-at-stage-1 gap that the AN7-5c receipt
+   documented for zookeeper (`git clean -fxd` → exit 128).
+
+   Idempotent: `scm/provision!` short-circuits to `:refreshed`
+   when `.git` already points at the registered URL/branch."
+  [d step ctx]
+  (let [implicit? (:implicit? step)
+        scm-cfg   (or (:scm step) (:scm ctx))
+        ws        (when-let [w (:workspace ctx)] (io/file w))]
+    (cond
+      ;; Implicit declarative-pipeline checkout with a configured SCM
+      ;; and a real workspace — actually provision.
+      (and implicit? scm-cfg ws)
+      (let [r (scm/provision! ws scm-cfg)]
+        (log-effect d [:checkout {:implicit? true
+                                  :result (:result r)
+                                  :sha (:sha r)
+                                  :url (:url scm-cfg)
+                                  :branch (:branch scm-cfg)
+                                  :error (:error r)
+                                  :source :scm-lifecycle}])
+        (if (= :failed (:result r))
+          ;; A failed implicit checkout means stage 1 will run against
+          ;; an empty / stale workspace — propagate the failure so the
+          ;; classifier sees the honest cause instead of a downstream
+          ;; `git clean -fxd: exit 128` red herring.
+          {:status :failed
+           :error :scm-checkout-failed
+           :message (or (:error r) "implicit checkout failed")
+           :ctx ctx}
+          (ok ctx)))
+
+      ;; Implicit checkout but no SCM configured — record skip and
+      ;; return ok. Preserves pre-AN8-4 behavior for jobs registered
+      ;; without `:scm` (the IR still honestly reflects Jenkins's
+      ;; declarative-lifecycle contract; the operator just hasn't
+      ;; wired the config yet).
+      implicit?
+      (do (log-effect d [:checkout {:implicit? true
+                                    :result :skipped
+                                    :reason (cond
+                                              (nil? scm-cfg) :no-scm-configured
+                                              (nil? ws) :no-workspace
+                                              :else :unknown)
+                                    :source :scm-lifecycle}])
+          (ok ctx))
+
+      ;; Explicit `checkout` step — pre-AN8-4 behavior (record the
+      ;; effect; runner's per-job provision already ran upfront).
+      :else
+      (do (log-effect d [:checkout {:spec (or (:spec step) (:ref step))
+                                    :args (:args step)}])
+          (ok ctx)))))
 
 (defn- h-mail [d step ctx]
   (log-effect d [:mail (or (:args step) (:raw-args step))])
@@ -1514,6 +1576,40 @@
        (string? (-> agent-spec :kubernetes :image))
        (not (clojure.string/blank? (-> agent-spec :kubernetes :image)))))
 
+(defn- dockerfile-multistage-feature-on?
+  "v0.6 T3 — the :anvil.features/dockerfile-multistage flag gates
+   `--target` forwarding + the matching cache-key extension. When off,
+   a dockerfile spec carrying :target is honored *without* `--target`
+   (same as v0.4 AN6-3 behavior) so the existing single-stage path is
+   never broken by an unknown flag value."
+  []
+  (try
+    ((requiring-resolve 'anvil.features/enabled?) :dockerfile-multistage)
+    (catch Throwable _ false)))
+
+(defn- publish-dockerfile-built-event!
+  "Publish a :dockerfile-built event to the per-build bus topic when we
+   can identify a build. Best-effort — a missing bus or bad ctx never
+   aborts the step. Mirrors `publish-cache-event!` above."
+  [ctx df-result filename target]
+  (try
+    (let [publish!    (requiring-resolve 'anvil.events.bus/publish!)
+          topic-build (requiring-resolve 'anvil.events.topics/topic-build)
+          jn  (:job-name ctx)
+          bn  (:build-number ctx)]
+      (when (and jn bn)
+        (publish! (topic-build jn bn)
+                  (cond-> {:type :dockerfile-built
+                           :job-name jn
+                           :build-number bn
+                           :dockerfile-path filename
+                           :image-tag (:tag df-result)
+                           :cache-hit? (boolean (:cached? df-result))
+                           :duration-ms (or (:duration-ms df-result) 0)}
+                    target (assoc :target target)))))
+    (catch Throwable t
+      (log/debug t "anvil.dispatcher: dockerfile-built publish failed (non-fatal)"))))
+
 (defn- unhonored-container-agent-shape
   "Returns a keyword naming the unhonored agent shape when `:agent step`
    is a container/cluster shape that this runner cannot actually execute
@@ -1642,16 +1738,35 @@
                              (dockerfile-agent-feature-on?))
                     (let [filename (or (:filename dockerfile-spec) "Dockerfile")
                           ws (:workspace ctx)
+                          ;; v0.6 T3 — forward :target + :dir only when
+                          ;; the multistage flag is on. With the flag
+                          ;; off, both fall back to nil and the v0.4
+                          ;; AN6-3 single-stage path is preserved.
+                          multistage? (dockerfile-multistage-feature-on?)
+                          target (when multistage? (:target dockerfile-spec))
+                          dir    (when multistage? (:dir dockerfile-spec))
                           ensure! (requiring-resolve 'anvil.tools.dockerfile/ensure-image!)
-                          r (ensure! ws filename {:execute? true})]
+                          r (ensure! ws filename {:execute? true
+                                                  :target target
+                                                  :dir dir})]
                       (log-effect d [(if (:cached? r)
                                        :dockerfile/image-cached
                                        :dockerfile/image-built)
-                                     {:tag (:tag r)
-                                      :exit (:exit r)
-                                      :filename filename
-                                      :workspace ws
-                                      :missing-dockerfile? (boolean (:missing-dockerfile? r))}])
+                                     (cond-> {:tag (:tag r)
+                                              :exit (:exit r)
+                                              :filename filename
+                                              :workspace ws
+                                              :missing-dockerfile? (boolean (:missing-dockerfile? r))}
+                                       target (assoc :target target)
+                                       dir    (assoc :dir dir))])
+                      ;; v0.6 T3 — emit :dockerfile-built SSE event on
+                      ;; every honored build (cache hit OR miss). Topic
+                      ;; lookup requires job-name + build-number on ctx;
+                      ;; absent those (record-only / unit-test paths),
+                      ;; the helper silently no-ops.
+                      (when (and (not (:missing-dockerfile? r))
+                                 (:tag r))
+                        (publish-dockerfile-built-event! ctx r filename target))
                       r))
         dockerfile-upgrade (when (and df-result (zero? (:exit df-result)))
                              {:docker {:image (:tag df-result)}
