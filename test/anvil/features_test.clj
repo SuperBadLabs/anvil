@@ -39,6 +39,13 @@
     :gitlab-mr :bitbucket-pr
     :multi-tenant})
 
+(def v0-6-runtime-flags
+  "v0.6 board T0.1 reservations: K8s agent runtime + Vault + Cloud-KMS
+   secret backends + multi-stage Dockerfile + SCM-checkout-lifecycle.
+   Closed-by-default until each tranche merges per AV6-7."
+  #{:k8s-agent :vault-backend :cloud-kms-backend
+    :dockerfile-multistage :scm-checkout-lifecycle})
+
 (deftest known-features-covers-the-seven-v0-3-tranches
   (testing "v0.3 board T1–T7 each have a reserved flag"
     (is (= #{:junit :problem-matchers :pr-checks
@@ -49,11 +56,13 @@
            ;;   :mvn-deploy-degrade — AN5-4 wild-corpus artifact unlock
            ;;   v0-4-leapfrog-flags — T0.2 of the v0.4 board
            ;;   v0-5-scale-flags    — T0.2 of the v0.5 board
+           ;;   v0-6-runtime-flags  — T0.1 of the v0.6 board
            (-> features/known-features
                (disj :scripted-eval)
                (disj :mvn-deploy-degrade)
                (clojure.set/difference v0-4-leapfrog-flags)
-               (clojure.set/difference v0-5-scale-flags))))))
+               (clojure.set/difference v0-5-scale-flags)
+               (clojure.set/difference v0-6-runtime-flags))))))
 
 (deftest known-features-reserves-the-four-v0-4-leapfrog-flags
   (testing "v0.4 board T0.2: :flaky / :container-step / :ai-authoring / :provenance reserved"
@@ -78,6 +87,18 @@
       (features/set! f false)
       (is (false? (features/enabled? f))
           (str f " is a v0.5 scale reservation — must default disabled per AV5-7")))))
+
+(deftest known-features-reserves-the-five-v0-6-runtime-flags
+  (testing "v0.6 board T0.1: k8s-agent + vault-backend + cloud-kms-backend + dockerfile-multistage + scm-checkout-lifecycle reserved"
+    (is (clojure.set/subset? v0-6-runtime-flags features/known-features)
+        "v0.6 runtime flags must be in known-features so anvil.edn parses them and dispatcher paths can gate on them")))
+
+(deftest v0-6-runtime-flags-default-closed
+  (testing "AV6-7 + features-closed-by-default: every v0.6 runtime flag is false until its tranche merges"
+    (doseq [f v0-6-runtime-flags]
+      (features/set! f false)
+      (is (false? (features/enabled? f))
+          (str f " is a v0.6 runtime reservation — must default disabled per AV6-7")))))
 
 (deftest enabled?-defaults-to-false
   (testing "every known feature is closed-by-default"

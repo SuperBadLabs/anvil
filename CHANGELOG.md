@@ -1,5 +1,29 @@
 # anvil — changelog
 
+## 0.6.0 — Hermetic-Adjacent + Kubernetes + Fidelity (planned)
+
+Per the [v0.6 execution board](docs/roadmap/v0.6-board.md), in
+progress. Two threads:
+
+1. **Runtime expansion** — Kubernetes agent runtime via chengis-core
+   0.4 (T1, biggest tranche, unblocks cassandra-real / eclipse-epsilon
+   / eclipse-mojarra); Vault + Cloud-KMS secret backend adapters
+   (T2, the v0.4-deferred operator ask); multi-stage Dockerfile
+   container-as-step (T3, the v0.5-deferred polish); build-overrides
+   hot-reload (T4, v0.5.x continuation).
+2. **Honesty thread (AN8 series)** — `tools{}`, `parameters{choice}`
+   defaults, matrix-declarative-with-tools composition, SCM-checkout-
+   before-stage-1 lifecycle. Targets ≥ 8/14 wild-corpus `:success`
+   per AV6-5 (aspirational 11-12).
+
+Reserved feature flags + SSE topics shipped by T0; all closed by
+default until each tranche merges.
+
+Tracks until v0.6.0 tag; see board for week cadence + locked
+decisions (AV6-1..9).
+
+---
+
 ## 0.5.0 — Scale + Honesty Release (2026-06-08)
 
 The release the v0.5 board promised: four scale tranches (T1-T4) and

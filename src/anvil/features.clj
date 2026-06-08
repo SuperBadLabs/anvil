@@ -157,7 +157,54 @@
     ;; existing single-tenant local-auth path holds — adapter is
     ;; completely no-op. Chengis 0.1 ships from its own repo;
     ;; this flag only enables the optional adapter.
-    :multi-tenant})
+    :multi-tenant
+
+    ;; --- v0.6 runtime-expansion + fidelity reservations
+    ;;     (T0.1 of the v0.6 board) ---
+    ;;
+    ;; :k8s-agent — T1. Kubernetes agent runtime via chengis-core 0.4
+    ;; (AV6-2). When on, `agent { kubernetes { yaml '...' } }` and
+    ;; `agent { kubernetes { containerTemplate(...) } }` route through
+    ;; chengis-core's K8sBackend (pod-per-step lifecycle, kubeconfig
+    ;; lookup, :resource-limits → pod resource requests/limits).
+    ;; When off, k8s agent shapes degrade to :unsupported honestly.
+    ;; Unblocks eclipse-epsilon + eclipse-mojarra + the cassandra-real
+    ;; Jenkinsfile (the `cassandra-large` k8s label).
+    :k8s-agent
+
+    ;; :vault-backend — T2. anvil.secrets.vault adapter (AV6-3).
+    ;; SecretBackend protocol impl backed by Hashicorp Vault KV v2.
+    ;; When on, credentials resolved via withCredentials hit Vault
+    ;; before the local-disk fallback. Operator configures via
+    ;; :anvil.vault/url + :anvil.vault/token-path in anvil.edn.
+    :vault-backend
+
+    ;; :cloud-kms-backend — T2. anvil.secrets.kms adapter (AV6-3).
+    ;; SecretBackend protocol impl backed by Cloud KMS (AWS-first;
+    ;; GCP + Azure stubs in v0.6.x). Encrypted blob lives in
+    ;; anvil.edn / Git; KMS decrypts at resolve time. Closed-by-
+    ;; default; operator opts in per-deployment.
+    :cloud-kms-backend
+
+    ;; :dockerfile-multistage — T3. Multi-stage Dockerfile support
+    ;; for `agent { dockerfile { filename 'Dockerfile' dir '...'
+    ;; args '--target prod' } }`. Builds upon the existing
+    ;; :dockerfile-agent flag (v0.4 AN6-3). When on, the --target
+    ;; flag is honored and the chengis-core docker backend's
+    ;; :dockerfile-build step caches the image hash per (Dockerfile
+    ;; content + COPY/ADD sources + --target) tuple. Unblocks
+    ;; cassandra-real's multi-stage dockerfile agent.
+    :dockerfile-multistage
+
+    ;; :scm-checkout-lifecycle — AN8-4. Universal fidelity fix —
+    ;; declarative pipelines without an explicit `checkout scm` step
+    ;; get an implicit checkout BEFORE stage 1 runs (matches Jenkins's
+    ;; declarative lifecycle). Without this flag, the AN7-5c receipt
+    ;; documents the failure mode: `git clean -fxd` exits 128 in
+    ;; ~800 ms against an empty workspace. With this flag on, the
+    ;; dispatcher inserts the implicit checkout. Closed-by-default
+    ;; through T5 ship; flipped to true once AN8-4 receipt lands.
+    :scm-checkout-lifecycle})
 
 (def ^:private flag-ns "anvil.features")
 

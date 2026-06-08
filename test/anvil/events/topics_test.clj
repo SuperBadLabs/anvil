@@ -54,6 +54,13 @@
     (is (= :mr-checked     t/evt-mr-checked))
     (is (= :pr-checked     t/evt-pr-checked))))
 
+(deftest v0-6-reserved-event-types
+  (testing "v0.6 T1 / T2 / T3 reservations"
+    (is (= :pod-scheduled    t/evt-pod-scheduled))
+    (is (= :pod-completed    t/evt-pod-completed))
+    (is (= :secret-resolved  t/evt-secret-resolved))
+    (is (= :dockerfile-built t/evt-dockerfile-built))))
+
 (deftest reserved-set-and-all-types-stay-in-sync
   (testing "reserved-v0-3 is exactly the 5 T1.5/T2.2/T3.3/T5.3/T6.7 names"
     (is (= #{:test-completed :problem-found :checks-updated
@@ -67,17 +74,28 @@
     (is (= #{:cache-hit :cache-miss :cost-tallied
              :mr-checked :pr-checked}
            t/reserved-v0-5)))
+  (testing "reserved-v0-6 is exactly the 4 runtime-expansion tranche names"
+    (is (= #{:pod-scheduled :pod-completed
+             :secret-resolved :dockerfile-built}
+           t/reserved-v0-6)))
   (testing "all-event-types is the union of existing + all reservation sets (no gaps)"
-    (is (= 20 (count t/all-event-types))
-        "6 existing + 5 v0.3 + 4 v0.4 + 5 v0.5 = 20")
+    (is (= 24 (count t/all-event-types))
+        "6 existing + 5 v0.3 + 4 v0.4 + 5 v0.5 + 4 v0.6 = 24")
     (is (every? t/all-event-types t/reserved-v0-3))
     (is (every? t/all-event-types t/reserved-v0-4))
     (is (every? t/all-event-types t/reserved-v0-5))
+    (is (every? t/all-event-types t/reserved-v0-6))
     (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-4)))
     (is (empty? (clojure.set/intersection t/reserved-v0-4 t/reserved-v0-5))
         "v0.4 and v0.5 reservations must not overlap")
     (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-5))
-        "v0.3 and v0.5 reservations must not overlap")))
+        "v0.3 and v0.5 reservations must not overlap")
+    (is (empty? (clojure.set/intersection t/reserved-v0-5 t/reserved-v0-6))
+        "v0.5 and v0.6 reservations must not overlap")
+    (is (empty? (clojure.set/intersection t/reserved-v0-4 t/reserved-v0-6))
+        "v0.4 and v0.6 reservations must not overlap")
+    (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-6))
+        "v0.3 and v0.6 reservations must not overlap")))
 
 (deftest reserved-topics-are-subscribable-today
   (testing "T1-T7 widgets can register listeners now even though the producer is months away"
