@@ -85,6 +85,15 @@
     ;; (closed by default per AV5-7).
     (when (features/enabled? :cost-reporting)
       ((requiring-resolve 'anvil.cost.recorder/start!)))
+    ;; v0.5 T3.1 — GitLab MR commit-status subscriber. Posts running/final
+    ;; state to GitLab Commit Status API. Gated by :gitlab-mr flag.
+    (when (features/enabled? :gitlab-mr)
+      ((requiring-resolve 'anvil.integration.gitlab-subscriber/start!)))
+    ;; v0.5 T3.2 — Bitbucket PR commit-status subscriber. Posts
+    ;; INPROGRESS/final state to Bitbucket Build Status API.
+    ;; Gated by :bitbucket-pr flag.
+    (when (features/enabled? :bitbucket-pr)
+      ((requiring-resolve 'anvil.integration.bitbucket-subscriber/start!)))
     ;; T5.2 — Cron scheduler. Jobs registered from
     ;; :anvil.scheduler/jobs in anvil.edn at startup; trigger-fn
     ;; routes to record-build-start! so a cron fire kicks off a real
@@ -117,6 +126,10 @@
                          (queue/stop-workers!)
                          (when (features/enabled? :cost-reporting)
                            ((requiring-resolve 'anvil.cost.recorder/stop!)))
+                         (when (features/enabled? :gitlab-mr)
+                           ((requiring-resolve 'anvil.integration.gitlab-subscriber/stop!)))
+                         (when (features/enabled? :bitbucket-pr)
+                           ((requiring-resolve 'anvil.integration.bitbucket-subscriber/stop!)))
                          (server/stop!)
                          (.countDown latch))))
     (.await latch)
