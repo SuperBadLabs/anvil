@@ -4,6 +4,62 @@
 **Earlier same-day: v0.4.1-rc static-classification rerun (PR #71).**
 **Previous receipts (v0.3.3 master full real-artifact run; v0.3.2 dirty-dozen subset; v0.3.1 baseline) preserved below.**
 
+---
+
+## Verdict-provenance taxonomy (AN7-6)
+
+> **Why this section.** Per AV5-6 the wild-corpus receipts honor
+> `:unsupported` over fake `:success`. AN7-1 (#78) introduced
+> hand-authored synthetic Jenkinsfiles ("shims") at
+> [`resources/anvil/config/wild-corpus-shims/`](../../resources/anvil/config/wild-corpus-shims/)
+> that win over upstream Jenkinsfiles for specific builds. A `:success`
+> from a shim proves anvil's plumbing works, but doesn't prove the
+> project's intrinsic CI semantics ran. Both signals matter; they're
+> different. AN7-6 makes the distinction visible in every receipt
+> table going forward via a **Type** column.
+
+Every per-build row in every v0.5+ receipt now carries one of two type
+markers:
+
+| Type | Meaning | Shim retires when |
+|---|---|---|
+| **A** | Real upstream Jenkinsfile ran to completion through anvil's translator + dispatcher. Honest CI pass: the project's tests + checks + plugins all ran in anvil's containers without failing. Anvil is shipping the full value chain. | (no shim — already type A) |
+| **B** | Hand-authored synthetic shim from `resources/anvil/config/wild-corpus-shims/<name>.Jenkinsfile` ran instead of the upstream Jenkinsfile. Anvil's plumbing verified end-to-end (translator → dispatcher → docker → classifier), but the project's intrinsic CI semantics short-circuited (e.g., `-DskipTests`, no shared-libs, no k8s agents). | The named AN7 ticket below lands and the shim is deleted from the overlay. |
+
+### Current shim-retirement schedule
+
+| Shim | Retires when | Becomes type |
+|---|---|---|
+| `apache-maven.Jenkinsfile` (AN7-1) | **AN7-4** lands — external `@Library` loader resolves `pipeline-library/mavenBuild()` | A |
+| `apache-activemq.Jenkinsfile` (AN7-1) | AN7-5 docker memory + Surefire JVM tuning passes the test phase | A (or stays B if upstream tests are intrinsically flaky) |
+| `apache-zookeeper.Jenkinsfile` (AN7-1) | AN7-5 | A (same caveat) |
+| `eclipse-jdt-core.Jenkinsfile` (AN7-1) | Upstream test-skip annotations + AN7-5 | A (caveat: JDT tests are intrinsic, may stay B until v0.6) |
+| `apache-cassandra.Jenkinsfile` (PR #75) | **v0.6** k8s-agent runtime — real `.jenkins/Jenkinsfile` uses `cassandra-large` k8s labels | A |
+
+### What a B `:success` means vs an A `:success`
+
+- **B `:success`** — anvil correctly: translated the synthetic Jenkinsfile,
+  dispatched the agent label to a docker image, mounted the workspace,
+  invoked `sh`, captured stdout/stderr/exit, classified the verdict
+  honestly. The artifact bytes are real bytes produced by a real
+  `mvn`/`ant` invocation. The pipeline ran. The PROJECT's full CI did
+  not (tests skipped, shared-lib bypassed, etc.).
+- **A `:success`** — same, but for the actual upstream Jenkinsfile.
+  Everything B asserts, plus: the project's tests passed, its
+  shared-libs resolved, its credentials provisioned, its agent labels
+  honored exactly as Jenkins would.
+
+When the receipt tally splits by type:
+- **Type-A count** is the metric that matters for "anvil ships value
+  to real CI users."
+- **Type-B count** is the metric that matters for "anvil's plumbing is
+  correct against real-world-shaped Jenkinsfiles."
+
+Both go up over time; the goal is to retire every B to A as the named
+AN7 / v0.6 tickets close.
+
+---
+
 ## v0.4.1-rc FLEET real-artifact rerun (2026-06-08)
 
 T6 continuation. After PR #71 locked down "no translator/dispatcher regression"
@@ -42,22 +98,35 @@ leapfrog flags ON (`:provenance :flaky :container-step
 
 ### Per-build receipt
 
-| Host  | Job                       | Verdict                       | Jars | Bytes        |
-|-------|---------------------------|-------------------------------|-----:|-------------:|
-| HeMan | apache-activemq           | `:failure :step-nonzero-exit` |  177 | 101,782,742  |
-| HeMan | apache-camel              | `:failure :step-nonzero-exit` |    3 |     126,972  |
-| HeMan | eclipse-jdt-core          | `:failure :step-nonzero-exit` |  925 | 280,863,419  |
-| HeMan | eclipse-jkube             | `:failure :credential-unresolved` | 44 | 4,610,709 |
-| Mario | apache-camel-quarkus      | `:failure :step-nonzero-exit` |    1 |      63,093  |
-| Mario | apache-cxf                | `:failure :step-nonzero-exit` |    9 |     338,925  |
-| Mario | apache-maven              | `:unsupported`                |  616 |   5,627,704  |
-| Mario | apache-zookeeper          | `:failure :step-nonzero-exit` |    5 |   1,460,961  |
-| Mario | eclipse-epsilon           | `:unsupported :agent-unhonored` | 5 |   4,502,562  |
-| Luigi | apache-cassandra          | (synthesized Jenkinsfile, see honest gap) | 0 | 0 |
-| Luigi | apache-hbase              | `:failure :step-nonzero-exit` |  155 | 391,544,489  |
-| Luigi | apache-streampipes        | `:failure :step-nonzero-exit` |    0 |           0  |
-| Luigi | hibernate-orm             | `:neutral :no-effects-recorded` | 1 |     48,462  |
-| Luigi | hibernate-search          | `:neutral :no-effects-recorded` | 1 |     63,093  |
+Type column per AN7-6: **A** = real upstream Jenkinsfile, **B** = synthetic
+shim ran instead. At this v0.4.1-rc snapshot, no shim overlay existed yet —
+every row was nominally type A. apache-cassandra is the exception:
+PR #75 hadn't landed, so the row read a fake "(synthesized
+Jenkinsfile)" placeholder from `scripts/wild-corpus-fleet-rerun.bb`
+that pre-dates the shim overlay. We label it **B (pre-overlay)** for
+retroactive clarity.
+
+| Host  | Job                       | Verdict                       | Type | Jars | Bytes        |
+|-------|---------------------------|-------------------------------|:----:|-----:|-------------:|
+| HeMan | apache-activemq           | `:failure :step-nonzero-exit` |  A   |  177 | 101,782,742  |
+| HeMan | apache-camel              | `:failure :step-nonzero-exit` |  A   |    3 |     126,972  |
+| HeMan | eclipse-jdt-core          | `:failure :step-nonzero-exit` |  A   |  925 | 280,863,419  |
+| HeMan | eclipse-jkube             | `:failure :credential-unresolved` | A | 44 | 4,610,709 |
+| Mario | apache-camel-quarkus      | `:failure :step-nonzero-exit` |  A   |    1 |      63,093  |
+| Mario | apache-cxf                | `:failure :step-nonzero-exit` |  A   |    9 |     338,925  |
+| Mario | apache-maven              | `:unsupported`                |  A   |  616 |   5,627,704  |
+| Mario | apache-zookeeper          | `:failure :step-nonzero-exit` |  A   |    5 |   1,460,961  |
+| Mario | eclipse-epsilon           | `:unsupported :agent-unhonored` | A |  5 |   4,502,562  |
+| Luigi | apache-cassandra          | (synthesized Jenkinsfile, see honest gap) | B (pre-overlay) | 0 | 0 |
+| Luigi | apache-hbase              | `:failure :step-nonzero-exit` |  A   |  155 | 391,544,489  |
+| Luigi | apache-streampipes        | `:failure :step-nonzero-exit` |  A   |    0 |           0  |
+| Luigi | hibernate-orm             | `:neutral :no-effects-recorded` | A |  1 |     48,462  |
+| Luigi | hibernate-search          | `:neutral :no-effects-recorded` | A |  1 |     63,093  |
+
+**Type tally at v0.4.1-rc:** 13 × type A + 1 × type B (pre-overlay) =
+14 honest rows. Zero of the rows are honest `:success` (the cassandra
+"synthesized" entry is the exception — pre-overlay fake `:success`
+that PR #75 closed out at v0.4.2).
 
 ### Why the bytes number is lower than v0.3.3 (and that's honest)
 
