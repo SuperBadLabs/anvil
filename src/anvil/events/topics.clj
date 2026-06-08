@@ -228,13 +228,48 @@
    Topic: [:build <job> <n>]."
   :pr-checked)
 
+(def evt-pod-scheduled
+  "v0.6 T1 — emitted when the K8s backend schedules a pod for a step.
+   Payload: {:type :pod-scheduled :build-id <id> :pod-name <str>
+             :namespace <str> :image <str> :resources {…}}.
+   Topic: [:build <job> <n>]."
+  :pod-scheduled)
+
+(def evt-pod-completed
+  "v0.6 T1 — emitted when a scheduled pod reaches a terminal state
+   (Succeeded / Failed / Evicted / OOMKilled).
+   Payload: {:type :pod-completed :build-id <id> :pod-name <str>
+             :namespace <str> :phase <str> :exit-code <int>?
+             :reason <str>?}.
+   Topic: [:build <job> <n>]."
+  :pod-completed)
+
+(def evt-secret-resolved
+  "v0.6 T2 — emitted when a SecretBackend successfully resolves a
+   credential id (Vault / KMS / local-disk). NEVER carries the secret
+   value — only the metadata operators want to audit.
+   Payload: {:type :secret-resolved :build-id <id> :credential-id <str>
+             :backend :vault|:kms|:local :latency-ms <n>}.
+   Topic: [:build <job> <n>] AND [:audit]."
+  :secret-resolved)
+
+(def evt-dockerfile-built
+  "v0.6 T3 — emitted when the multi-stage Dockerfile container-step
+   produces a built image (or hits the BuildKit cache for that
+   Dockerfile content + --target tuple).
+   Payload: {:type :dockerfile-built :build-id <id> :dockerfile-path <str>
+             :target <str>? :image-tag <str> :image-digest <sha256>
+             :cache-hit? <bool> :duration-ms <n>}.
+   Topic: [:build <job> <n>]."
+  :dockerfile-built)
+
 ;; ---------------------------------------------------------------------------
 ;; Self-documenting registry
 ;; ---------------------------------------------------------------------------
 
 (def all-event-types
   "Every :type value the bus is expected to carry, in-prod plus
-   v0.3, v0.4, and v0.5 reservations. Used by docs + a future
+   v0.3, v0.4, v0.5, and v0.6 reservations. Used by docs + a future
    /metrics page that wants to enumerate observable event types."
   #{;; existing
     evt-build-started evt-build-done
@@ -249,7 +284,11 @@
     ;; v0.5 reserved
     evt-cache-hit evt-cache-miss
     evt-cost-tallied
-    evt-mr-checked evt-pr-checked})
+    evt-mr-checked evt-pr-checked
+    ;; v0.6 reserved
+    evt-pod-scheduled evt-pod-completed
+    evt-secret-resolved
+    evt-dockerfile-built})
 
 (def reserved-v0-3
   "Subset of `all-event-types` declared for v0.3 (now all shipped, kept
@@ -277,3 +316,18 @@
   #{evt-cache-hit evt-cache-miss
     evt-cost-tallied
     evt-mr-checked evt-pr-checked})
+
+(def reserved-v0-6
+  "Subset of `all-event-types` declared for v0.6 runtime-expansion tranches.
+   Producers come in:
+     - evt-pod-scheduled / evt-pod-completed → T1 (K8s agent runtime
+       via chengis-core 0.4's K8sBackend)
+     - evt-secret-resolved                   → T2 (SecretBackend
+       protocol — Vault / KMS / local)
+     - evt-dockerfile-built                  → T3 (multi-stage
+       Dockerfile container-as-step)
+   Subscribing today is safe — no events flow until each tranche's
+   producer code lands."
+  #{evt-pod-scheduled evt-pod-completed
+    evt-secret-resolved
+    evt-dockerfile-built})
