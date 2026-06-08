@@ -38,7 +38,8 @@
    across steps in the same stage) — a substantive speedup, requires
    wiring `prepare-workspace` into `h-agent-stage-enter` and `cleanup`
    into `h-agent-stage-leave`."
-  (:require [clojure.string :as str]
+  (:require [babashka.process :as bp]
+            [clojure.string :as str]
             [chengis.engine.backend :as backend]
             [chengis.engine.backend.docker :as docker]
             [taoensso.timbre :as log]))
@@ -150,6 +151,111 @@
    :stderr (or (:stderr result) "")
    :streamed? (boolean (:log-file step-spec))})
 
+;; ---------------------------------------------------------------------------
+;; Inline-docker fallback — AN7-3 file credentials
+;;
+;; chengis-core 0.3.0's `DockerBackend` has no hook for arbitrary mount
+;; flags. We pass `-v host:container:ro` strings into the `:extra-args`
+;; key on construction, but `run-disposable-container` never reads that
+;; key, so the file mounts vanish before `docker run`. Result: the
+;; credential file is never inside the container, and the env var
+;; (which we DO inject — that part works) points at /anvil-creds/<id>
+;; which doesn't exist.
+;;
+;; Until chengis-core grows a `:mounts` (or equivalent) config, we
+;; bypass it for steps that carry `:file-mounts` in ctx and shell out
+;; to `docker run` directly. The non-credential 99% path keeps using
+;; chengis-core's backend with its full lifecycle. Cancel + per-build
+;; reuse + image pulling are losses on this fallback — acceptable for
+;; the credential path which always runs `:per-step` anyway and which
+;; you can't easily share across builds.
+;; ---------------------------------------------------------------------------
+
+(defn- file-mount-flags
+  "Per-mount `-v host:container:ro` arg pairs for an inline docker run."
+  [file-mounts]
+  (mapcat (fn [{:keys [host-path container-path]}]
+            ["-v" (str host-path ":" container-path ":ro")])
+          file-mounts))
+
+(defn- env-flags
+  "Stable-ordered `-e KEY=VAL` flags for an inline docker run. Order
+   matches chengis-core's `env-flags` so logged command lines stay
+   comparable."
+  [env]
+  (->> (sort-by key (or env {}))
+       (mapcat (fn [[k v]] ["-e" (str k "=" v)]))))
+
+(defn build-inline-docker-argv
+  "Pure builder for the `docker run --rm` argv used by the inline
+   fallback path. Exposed for tests so we can assert the -v / -e flags
+   without invoking the daemon.
+
+   The arg shape mirrors chengis-core's `run-disposable-container` — same
+   `-v workspace:workspace`, `-w workspace`, env flags. Plus the
+   file-mount `-v host:container:ro` flags chengis-core can't emit."
+  [{:keys [image extra-args]} workspace cmd env file-mounts]
+  (vec
+   (concat ["docker" "run" "--rm" "-i"
+            "-v" (str workspace ":" workspace)
+            "-w" (str workspace)]
+           (when (and extra-args (not (str/blank? extra-args)))
+             (str/split extra-args #"\s+"))
+           (file-mount-flags file-mounts)
+           (env-flags env)
+           [image "sh" "-c" cmd])))
+
+(defn- execute-inline-docker
+  "Direct `docker run --rm` invocation for the file-credential case
+   (see ns-level comment). Honors :timeout-deadline and :log-file the
+   same way the non-docker subprocess path in `shell-execute` does."
+  [cmd ctx]
+  (let [docker-spec (docker-agent-spec (:active-agent ctx))
+        workspace (or (:workspace ctx) (:cwd ctx) "/workspace")
+        argv (build-inline-docker-argv docker-spec
+                                       workspace
+                                       cmd
+                                       (:env ctx {})
+                                       (:file-mounts ctx))
+        deadline-ms (when-let [d (:timeout-deadline ctx)]
+                      (max 1 (- d (System/currentTimeMillis))))
+        log-file (:log-file ctx)
+        stream? (some? log-file)
+        append-redirect (when stream?
+                          (java.lang.ProcessBuilder$Redirect/appendTo log-file))
+        base-opts (cond-> {:continue true}
+                    stream?       (assoc :out append-redirect
+                                         :err append-redirect)
+                    (not stream?) (assoc :out :string :err :string))]
+    (try
+      (let [pb (apply bp/process base-opts argv)
+            completed (if deadline-ms
+                        (let [fut (future @pb)
+                              r   (deref fut deadline-ms ::timeout)]
+                          (if (= r ::timeout)
+                            (do (.destroyForcibly ^Process (:proc pb))
+                                ::timeout)
+                            r))
+                        @pb)]
+        (cond
+          (= completed ::timeout)
+          {:exit 124 :stdout ""
+           :stderr "[anvil] timeout — docker subprocess killed by anvil's timeout enforcement"
+           :streamed? stream?}
+
+          stream?
+          {:exit (:exit completed) :stdout "" :stderr "" :streamed? true}
+
+          :else
+          {:exit (:exit completed)
+           :stdout (or (:out completed) "")
+           :stderr (or (:err completed) "")
+           :streamed? false}))
+      (catch Exception e
+        {:exit -1 :stdout ""
+         :stderr (str "[anvil] execute-inline-docker exception: " (.getMessage e))
+         :streamed? false}))))
+
 (defn execute-via-backend
   "Run `cmd` under `ctx` using the chengis-core backend resolved by
    `backend-for-ctx`. Returns the same map shape anvil's legacy
@@ -171,29 +277,42 @@
    returns `{:exit 125 :stdout \"\" :stderr <explain> :streamed? false}`
    matching the exit code convention chengis-core uses for setup
    failures. Anvil's classifier reads exit 125 as a real failure
-   (`:step-nonzero-exit`)."
+   (`:step-nonzero-exit`).
+
+   AN7-3: When ctx carries `:file-mounts` (from
+   `h-with-credentials` resolving a :file-type credential), routes to
+   `execute-inline-docker` instead — chengis-core 0.3.0's DockerBackend
+   silently drops mount-extension flags, so the file would never make
+   it into the container and the bound env var would point at an empty
+   /anvil-creds/<id>."
   ([cmd ctx] (execute-via-backend cmd ctx nil))
   ([cmd ctx mask-values]
-   (let [backend-inst (backend-for-ctx ctx)
-         build-spec {:workspace-path (or (:workspace ctx) (:cwd ctx))
-                     :job-name (:job-name ctx)
-                     :build-number (:build-number ctx)
-                     :env (:env ctx {})}
-         prep (backend/prepare-workspace backend-inst build-spec)]
-     (if (= :failed (:result prep))
-       (do (log/warn (str "anvil.backend-wiring: prepare-workspace failed: "
-                          (:explain prep)))
-           {:exit 125 :stdout ""
-            :stderr (str "[anvil] backend prepare-workspace failed: "
-                         (:explain prep))
-            :streamed? false})
-       (let [step-spec (-> (ctx->step-spec cmd ctx mask-values)
-                           (assoc :backend-state (:backend-state prep)))
-             result (backend/execute-step backend-inst step-spec)]
-         (try
-           (backend/cleanup backend-inst build-spec)
-           (catch Throwable t
-             ;; Cleanup is best-effort. Failing here would mask a real
-             ;; step failure or success.
-             (log/warn t "anvil.backend-wiring: cleanup failed; continuing")))
-         (result->shell-execute-shape result step-spec))))))
+   (cond
+     (and (seq (:file-mounts ctx))
+          (docker-agent-spec (:active-agent ctx)))
+     (execute-inline-docker cmd ctx)
+
+     :else
+     (let [backend-inst (backend-for-ctx ctx)
+           build-spec {:workspace-path (or (:workspace ctx) (:cwd ctx))
+                       :job-name (:job-name ctx)
+                       :build-number (:build-number ctx)
+                       :env (:env ctx {})}
+           prep (backend/prepare-workspace backend-inst build-spec)]
+       (if (= :failed (:result prep))
+         (do (log/warn (str "anvil.backend-wiring: prepare-workspace failed: "
+                            (:explain prep)))
+             {:exit 125 :stdout ""
+              :stderr (str "[anvil] backend prepare-workspace failed: "
+                           (:explain prep))
+              :streamed? false})
+         (let [step-spec (-> (ctx->step-spec cmd ctx mask-values)
+                             (assoc :backend-state (:backend-state prep)))
+               result (backend/execute-step backend-inst step-spec)]
+           (try
+             (backend/cleanup backend-inst build-spec)
+             (catch Throwable t
+               ;; Cleanup is best-effort. Failing here would mask a real
+               ;; step failure or success.
+               (log/warn t "anvil.backend-wiring: cleanup failed; continuing")))
+           (result->shell-execute-shape result step-spec)))))))
