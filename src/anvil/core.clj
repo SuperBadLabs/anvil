@@ -94,6 +94,19 @@
     ;; Gated by :bitbucket-pr flag.
     (when (features/enabled? :bitbucket-pr)
       ((requiring-resolve 'anvil.integration.bitbucket-subscriber/start!)))
+    ;; v0.5 T4 — Chengis RBAC adapter. When :multi-tenant is on,
+    ;; installs the ChengisBackend (HTTP calls to chengis service) and
+    ;; starts the audit-log subscriber. When off, the NoOpBackend is
+    ;; used (already the default at load time).
+    (when (features/enabled? :multi-tenant)
+      (let [edn ((requiring-resolve 'anvil.config/load-edn) "anvil" {})]
+        (if (:anvil.tenancy/service-url edn)
+          (let [set-backend! (requiring-resolve 'anvil.tenancy.rbac/set-backend!)
+                make-backend (requiring-resolve 'anvil.tenancy.rbac/->ChengisBackend)]
+            (set-backend! (make-backend))
+            (log/info "anvil.rbac: ChengisBackend installed"))
+          (log/warn "anvil.rbac: :multi-tenant on but :anvil.tenancy/service-url not set; using NoOpBackend")))
+      ((requiring-resolve 'anvil.tenancy.audit-subscriber/start!)))
     ;; T5.2 — Cron scheduler. Jobs registered from
     ;; :anvil.scheduler/jobs in anvil.edn at startup; trigger-fn
     ;; routes to record-build-start! so a cron fire kicks off a real
@@ -130,6 +143,8 @@
                            ((requiring-resolve 'anvil.integration.gitlab-subscriber/stop!)))
                          (when (features/enabled? :bitbucket-pr)
                            ((requiring-resolve 'anvil.integration.bitbucket-subscriber/stop!)))
+                         (when (features/enabled? :multi-tenant)
+                           ((requiring-resolve 'anvil.tenancy.audit-subscriber/stop!)))
                          (server/stop!)
                          (.countDown latch))))
     (.await latch)
