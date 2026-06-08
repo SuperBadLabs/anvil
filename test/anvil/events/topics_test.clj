@@ -46,6 +46,14 @@
     (is (= :ai-suggested           t/evt-ai-suggested))
     (is (= :provenance-attested    t/evt-provenance-attested))))
 
+(deftest v0-5-reserved-event-types
+  (testing "v0.5 T1.3 / T2.2 / T3.1 / T3.2 reservations"
+    (is (= :cache-hit      t/evt-cache-hit))
+    (is (= :cache-miss     t/evt-cache-miss))
+    (is (= :cost-tallied   t/evt-cost-tallied))
+    (is (= :mr-checked     t/evt-mr-checked))
+    (is (= :pr-checked     t/evt-pr-checked))))
+
 (deftest reserved-set-and-all-types-stay-in-sync
   (testing "reserved-v0-3 is exactly the 5 T1.5/T2.2/T3.3/T5.3/T6.7 names"
     (is (= #{:test-completed :problem-found :checks-updated
@@ -55,13 +63,21 @@
     (is (= #{:flaky-flagged :container-step-started
              :ai-suggested :provenance-attested}
            t/reserved-v0-4)))
-  (testing "all-event-types is the union of existing + both reservation sets (no gaps)"
-    (is (= 15 (count t/all-event-types))
-        "6 existing + 5 v0.3 + 4 v0.4 = 15")
+  (testing "reserved-v0-5 is exactly the 5 scale tranche names"
+    (is (= #{:cache-hit :cache-miss :cost-tallied
+             :mr-checked :pr-checked}
+           t/reserved-v0-5)))
+  (testing "all-event-types is the union of existing + all reservation sets (no gaps)"
+    (is (= 20 (count t/all-event-types))
+        "6 existing + 5 v0.3 + 4 v0.4 + 5 v0.5 = 20")
     (is (every? t/all-event-types t/reserved-v0-3))
     (is (every? t/all-event-types t/reserved-v0-4))
-    (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-4))
-        "v0.3 and v0.4 reservations must not overlap")))
+    (is (every? t/all-event-types t/reserved-v0-5))
+    (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-4)))
+    (is (empty? (clojure.set/intersection t/reserved-v0-4 t/reserved-v0-5))
+        "v0.4 and v0.5 reservations must not overlap")
+    (is (empty? (clojure.set/intersection t/reserved-v0-3 t/reserved-v0-5))
+        "v0.3 and v0.5 reservations must not overlap")))
 
 (deftest reserved-topics-are-subscribable-today
   (testing "T1-T7 widgets can register listeners now even though the producer is months away"

@@ -122,7 +122,42 @@
     ;; the unhonored shape honestly. Implementation lives in
     ;; anvil.tools.dockerfile at v0.4.0; will extract to
     ;; chengis.tools.dockerfile when chengis-core 0.4.0 ships.
-    :dockerfile-agent})
+    :dockerfile-agent
+
+    ;; --- v0.5 scale-tranche reservations (T0.2 of the v0.5 board) ---
+    ;;
+    ;; :cache — T1. Content-addressed step-level cache per AV5-2.
+    ;; Cache key = (image-digest, command, env-fingerprint, input-
+    ;; tree-merkle). Local FS store at ~/.anvil/cache; optional
+    ;; remote S3-style store behind the companion :cache-remote
+    ;; flag. Closed-by-default through T1 ship; flipped in the last
+    ;; T1 commit.
+    :cache
+    :cache-remote
+
+    ;; :cost-reporting — T2. Wall-time × declared host rate. Per-host
+    ;; rates live in :anvil.cost/host-rates in anvil.edn. Recorder
+    ;; persists to anvil_build_costs (new migration 012); UI surfaces
+    ;; on /cost dashboard + per-build pill. Closed-by-default.
+    :cost-reporting
+
+    ;; :gitlab-mr — T3. anvil.integration.gitlab-subscriber mirrors
+    ;; the v0.4 T3.4 GitHub Checks pattern (AV5-4) — subscribes to
+    ;; :build-started / :build-done, PATCHes the MR status.
+    :gitlab-mr
+
+    ;; :bitbucket-pr — T3 companion. anvil.integration.bitbucket-
+    ;; subscriber for Bitbucket's PR check API. Ships alongside
+    ;; :gitlab-mr; either can be enabled independently.
+    :bitbucket-pr
+
+    ;; :multi-tenant — T4. Chengis 0.1 RBAC adapter (AV5-5). When
+    ;; on, anvil's auth path routes through chengis-rbac/check;
+    ;; audit events flow to chengis audit log. When off, anvil's
+    ;; existing single-tenant local-auth path holds — adapter is
+    ;; completely no-op. Chengis 0.1 ships from its own repo;
+    ;; this flag only enables the optional adapter.
+    :multi-tenant})
 
 (def ^:private flag-ns "anvil.features")
 
