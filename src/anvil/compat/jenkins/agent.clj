@@ -165,12 +165,46 @@
                             ;; reads :tools off the synthetic enter step to
                             ;; resolve the docker image via
                             ;; :anvil.tools/images in anvil.edn.
-                            eff-tools (or (:tools stage) top-tools)
+                            ;;
+                            ;; AN8-3: matrix-expanded cells carry their
+                            ;; effective :tools (parent-stage ⊕ matrix-level
+                            ;; tools, already composed in
+                            ;; expand-matrix-stage). Pipeline-level
+                            ;; `top-tools` provides the BASE — merged
+                            ;; here by :type so cell/stage declarations
+                            ;; (more-specific) win over pipeline ones on
+                            ;; collision but un-overridden pipeline tools
+                            ;; survive. Without this merge, a pipeline
+                            ;; `tools { gradle 'X' }` combined with a
+                            ;; matrix `tools { jdk \"${V}\" }` would drop
+                            ;; gradle from cells — losing the composition
+                            ;; rule's outer-as-base half.
+                            stage-tools (:tools stage)
+                            eff-tools (cond
+                                        (empty? stage-tools)
+                                        top-tools
+
+                                        (empty? top-tools)
+                                        stage-tools
+
+                                        :else
+                                        (let [by-type (reduce (fn [m t]
+                                                                (assoc m (:type t) t))
+                                                              {}
+                                                              (concat top-tools stage-tools))]
+                                          (vec (vals by-type))))
+                            ;; AN8-3: matrix-expanded cells carry :matrix-axes
+                            ;; (the cell's axis-name→value map). Surfacing it
+                            ;; on the synthetic stage-enter step lets the
+                            ;; dispatcher interpolate `${JAVA_VERSION}` in
+                            ;; tool versions before the AN8-1 image lookup.
+                            axes (:matrix-axes stage)
                             stage-name (:name stage)
                             enter (cond-> {:type :jenkins/agent-stage-enter
                                            :stage stage-name
                                            :agent eff}
-                                    (seq eff-tools) (assoc :tools eff-tools))
+                                    (seq eff-tools) (assoc :tools eff-tools)
+                                    (seq axes) (assoc :matrix-axes axes))
                             leave {:type :jenkins/agent-stage-leave
                                    :stage stage-name
                                    :agent eff}]
