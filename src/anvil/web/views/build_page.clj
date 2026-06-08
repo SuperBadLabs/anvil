@@ -12,6 +12,7 @@
             [anvil.web.build-summary :as summary]
             [anvil.web.views.test-results :as test-results-view]
             [anvil.web.views.problems :as problems-view]
+            [anvil.web.views.provenance-pill :as provenance-pill]
             [anvil.storage.test-results :as tr-store]
             [anvil.storage.problems :as problems-store]
             [anvil.integration.github :as gh]
@@ -154,6 +155,14 @@
                             "/runs/" (:check-run-id cr))
                  :target "_blank" :rel "noopener"}
              (str (:repo cr) " #" (:check-run-id cr))]]))
+
+       ;; v0.4.1 T4.4 — Provenance pill. Renders nil unless :provenance
+       ;; flag is on AND the dispatcher emitted :provenance/attested or
+       ;; :provenance/degraded effects for this build. Same SSE-swap
+       ;; pattern as the flaky widget (T1.4) — htmx hx-trigger
+       ;; sse:provenance-attested swaps the pill live as each artifact
+       ;; signs without a page reload.
+       (provenance-pill/pill b)
 
        ;; Toolbar (TU3 navigation strip)
        [:div.console-toolbar
