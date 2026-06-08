@@ -13,6 +13,7 @@
             [anvil.web.views.test-results :as test-results-view]
             [anvil.web.views.problems :as problems-view]
             [anvil.web.views.provenance-pill :as provenance-pill]
+            [anvil.web.views.cost-pill :as cost-pill]
             [anvil.storage.test-results :as tr-store]
             [anvil.storage.problems :as problems-store]
             [anvil.integration.github :as gh]
@@ -163,6 +164,12 @@
        ;; sse:provenance-attested swaps the pill live as each artifact
        ;; signs without a page reload.
        (provenance-pill/pill b)
+
+       ;; v0.5 T2.4 — Cost pill. Renders nil unless :cost-reporting flag
+       ;; is on AND the recorder has persisted a row for this build.
+       ;; hx-trigger='sse:cost-tallied' live-updates the pill on build
+       ;; completion without a page reload (T2.2 SSE).
+       (cost-pill/pill b)
 
        ;; Toolbar (TU3 navigation strip)
        [:div.console-toolbar
