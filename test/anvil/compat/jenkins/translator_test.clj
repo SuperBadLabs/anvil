@@ -44,6 +44,45 @@
       (is (= "foo" (get-in a-label [:agent :label])))
       (is (= "node:18" (get-in a-docker [:agent :docker :image]))))))
 
+(deftest dockerfile-agent-v0-4-shape-test
+  (testing "v0.4 AN6-3 base shape: agent { dockerfile { filename '...' } } → {:dockerfile {:filename}}"
+    (let [ir (t/parse "pipeline { agent { dockerfile { filename 'Dockerfile.ci' } }; stages { stage('x') { steps { sh 'y' } } } }")]
+      (is (= "Dockerfile.ci" (get-in ir [:agent :dockerfile :filename])))
+      (is (nil? (get-in ir [:agent :dockerfile :target]))
+          "no args → no target inferred"))))
+
+(deftest dockerfile-agent-v0-6-t3-multistage-test
+  (testing "v0.6 T3 — args '--target prod' lifts target into the IR"
+    (let [ir (t/parse "pipeline {
+                         agent { dockerfile { filename 'Dockerfile'
+                                              dir 'docker-build'
+                                              args '--target prod' } };
+                         stages { stage('x') { steps { sh 'y' } } } }")]
+      (is (= "Dockerfile" (get-in ir [:agent :dockerfile :filename])))
+      (is (= "docker-build" (get-in ir [:agent :dockerfile :dir])))
+      (is (= "--target prod" (get-in ir [:agent :dockerfile :args])))
+      (is (= "prod" (get-in ir [:agent :dockerfile :target])))))
+  (testing "v0.6 T3 — args '--target=builder' (equals form)"
+    (let [ir (t/parse "pipeline {
+                         agent { dockerfile { filename 'Dockerfile'
+                                              args '--target=builder' } };
+                         stages { stage('x') { steps { sh 'y' } } } }")]
+      (is (= "builder" (get-in ir [:agent :dockerfile :target])))))
+  (testing "v0.6 T3 — args without --target: target stays nil but args preserved"
+    (let [ir (t/parse "pipeline {
+                         agent { dockerfile { filename 'Dockerfile'
+                                              args '--platform linux/amd64' } };
+                         stages { stage('x') { steps { sh 'y' } } } }")]
+      (is (= "--platform linux/amd64" (get-in ir [:agent :dockerfile :args])))
+      (is (nil? (get-in ir [:agent :dockerfile :target])))))
+  (testing "v0.6 T3 — additionalBuildArgs alias is honored"
+    (let [ir (t/parse "pipeline {
+                         agent { dockerfile { filename 'Dockerfile'
+                                              additionalBuildArgs '--target prod' } };
+                         stages { stage('x') { steps { sh 'y' } } } }")]
+      (is (= "prod" (get-in ir [:agent :dockerfile :target]))
+          "Jenkins's additionalBuildArgs spelling parses identically to args"))))
+
 (deftest post-actions-test
   (testing "post { always { … } success { … } failure { … } cleanup { … } } maps to keyed actions"
     (let [src "pipeline {

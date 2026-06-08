@@ -26,7 +26,11 @@
      {:label STRING}                              ; agent { label '…' }
      {:label STRING :type :node-label}            ; agent { node { label '…' } }
      {:docker {:image STRING :args STRING?}}      ; agent { docker { … } }
-     {:dockerfile {:filename STRING :dir STRING?}} ; agent { dockerfile { … } }
+     {:dockerfile {:filename STRING :dir STRING?
+                   :args STRING? :target STRING?}} ; agent { dockerfile { … } }
+                                                   ; — v0.6 T3: args + target
+                                                   ; honored when
+                                                   ; :dockerfile-multistage on
      {:type :kubernetes :raw ...}                 ; (deferred to a later wave)
      {:type :unknown :raw ...}                    ; fallback
 

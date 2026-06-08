@@ -16,7 +16,8 @@
      {:label STRING}                    — agent { label '...' }
      {:type :node-label :label STRING}  — agent { node { label '...' } }
      {:docker {:image STRING :args STRING?}}
-     {:dockerfile {:filename STRING :dir STRING?}}
+     {:dockerfile {:filename STRING :dir STRING?
+                   :args STRING? :target STRING?}}  ; v0.6 T3 multistage
      {:type :kubernetes :raw ...}       — out of scope; rejection below
 
    Resolution policy:
@@ -56,7 +57,10 @@
     (= :kubernetes (:type spec)) "kubernetes (UNSUPPORTED)"
     (:label spec)                (str "label:" (:label spec))
     (:docker spec)               (str "docker:" (-> spec :docker :image))
-    (:dockerfile spec)           (str "dockerfile:" (-> spec :dockerfile :filename))
+    (:dockerfile spec)           (let [df (:dockerfile spec)
+                                       base (str "dockerfile:" (:filename df))]
+                                   (cond-> base
+                                     (:target df) (str " --target=" (:target df))))
     :else                        (str "unknown:" (pr-str spec))))
 
 (defn deferred?

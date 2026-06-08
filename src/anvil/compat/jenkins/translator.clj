@@ -1107,10 +1107,37 @@
               args (assoc-in [:docker :args] args)))
 
           dockerfile-call
-          {:dockerfile {:filename
-                        (or (some-> (closure-arg dockerfile-call) body-calls
-                                    (find-call "filename") :args first const-val)
-                            "Dockerfile")}}
+          ;; v0.6 T3 — multi-stage dockerfile support.
+          ;; agent { dockerfile { filename '...' dir '...' args '--target prod' } }
+          ;;
+          ;; Behind :anvil.features/dockerfile-multistage. When the args
+          ;; string carries `--target X` (or `--target=X`) we lift the
+          ;; stage name into the IR so the dispatcher can forward it to
+          ;; `docker build --target X` and incorporate it into the image
+          ;; cache key. Any other tokens in args ride through verbatim.
+          (let [df-body (body-calls (closure-arg dockerfile-call))
+                filename (or (some-> (find-call df-body "filename")
+                                     :args first const-val)
+                             "Dockerfile")
+                dir      (some-> (find-call df-body "dir")
+                                 :args first const-val)
+                args-str (some-> (find-call df-body "args")
+                                 :args first const-val)
+                ;; additionalBuildArgs '...' is the Jenkins Dockerfile
+                ;; Pipeline name for the same idea; accept either spelling.
+                addl-str (some-> (find-call df-body "additionalBuildArgs")
+                                 :args first const-val)
+                combined-args (cond
+                                (and args-str addl-str) (str args-str " " addl-str)
+                                args-str args-str
+                                addl-str addl-str)
+                target (when combined-args
+                         (or (second (re-find #"--target=([^\s]+)" combined-args))
+                             (second (re-find #"--target\s+([^\s]+)" combined-args))))]
+            {:dockerfile (cond-> {:filename filename}
+                           dir           (assoc :dir dir)
+                           combined-args (assoc :args combined-args)
+                           target        (assoc :target target))})
 
           k8s-call
           {:type :kubernetes :raw "<deferred to a later wave>"}
