@@ -22,6 +22,7 @@
             [anvil.web.views.job-create-page :as job-create]
             [anvil.web.views.secrets-page :as secrets-page]
             [anvil.web.views.flaky-page :as flaky-page]
+            [anvil.web.views.cost-page :as cost-page]
             [anvil.web.ai-handler :as ai-handler]
             [anvil.features :as features]
             [anvil.web.console-dl :as console-dl]
@@ -164,6 +165,13 @@
     {:get (features/wrap-feature :flaky
                                  (fn [req] (html (flaky-page/page req))))
      :name ::flaky}]
+   ;; v0.5 T2.3 — Cost dashboard. Gated by :cost-reporting feature flag
+   ;; (closed-by-default per AV5-7). Shows top-N builds by cost over
+   ;; a rolling 30-day window with 30d totals + cache-savings.
+   ["/cost"
+    {:get (features/wrap-feature :cost-reporting
+                                 (fn [req] (html (cost-page/page req))))
+     :name ::cost}]
    ;; v0.4.1 T3.4 + T3.5 — AI authoring buttons on /jobs/<j>.  Both
    ;; return HTML fragments for htmx to swap into the modal target.
    ;; Gated by :ai-authoring (closed-by-default per AV4-7).  Optimize

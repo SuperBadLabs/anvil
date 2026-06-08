@@ -80,6 +80,11 @@
     ;; :build-done on the bus and PATCHes the github check-run state.
     (when (features/enabled? :pr-checks)
       ((requiring-resolve 'anvil.integration.github-subscriber/start!)))
+    ;; v0.5 T2.1 — Cost recorder subscribes to :build-done and records
+    ;; build cost to anvil_build_costs. Gated by :cost-reporting flag
+    ;; (closed by default per AV5-7).
+    (when (features/enabled? :cost-reporting)
+      ((requiring-resolve 'anvil.cost.recorder/start!)))
     ;; T5.2 — Cron scheduler. Jobs registered from
     ;; :anvil.scheduler/jobs in anvil.edn at startup; trigger-fn
     ;; routes to record-build-start! so a cron fire kicks off a real
@@ -110,6 +115,8 @@
                        (fn []
                          (log/info "SIGTERM/SIGINT — shutting anvil down")
                          (queue/stop-workers!)
+                         (when (features/enabled? :cost-reporting)
+                           ((requiring-resolve 'anvil.cost.recorder/stop!)))
                          (server/stop!)
                          (.countDown latch))))
     (.await latch)

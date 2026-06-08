@@ -4,6 +4,7 @@
    to help an operator answer 'is the build pipeline healthy?' at a
    glance, not to compete with Jenkins's Blue Ocean."
   (:require [hiccup2.core :as h]
+            [anvil.features :as features]
             [anvil.version :as v]))
 
 (def ^:private css "
@@ -377,7 +378,9 @@
        [:a {:href "/jobs" :class (when (= active :jobs) "active")} "Jobs"]
        [:a {:href "/queue" :class (when (= active :queue) "active")} "Queue"]
        [:a {:href "/executors" :class (when (= active :executors) "active")} "Executors"]
-       [:a {:href "/coverage" :class (when (= active :coverage) "active")} "Coverage"]]
+       [:a {:href "/coverage" :class (when (= active :coverage) "active")} "Coverage"]
+       (when (features/enabled? :cost-reporting)
+         [:a {:href "/cost" :class (when (= active :cost) "active")} "Cost"])]
       body-hiccup
       [:footer
        (v/version-string)
