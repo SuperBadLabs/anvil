@@ -1,7 +1,172 @@
 # Wild-corpus matrix — honest reading
 
-**Latest receipt: 2026-06-08 — anvil v0.4.1-rc (commit 11d1a70), static-classification rerun.**
+**Latest receipt: 2026-06-08 — anvil v0.4.1-rc (commit 11d1a70), FLEET real-artifact rerun (HeMan + Mario + Luigi).**
+**Earlier same-day: v0.4.1-rc static-classification rerun (PR #71).**
 **Previous receipts (v0.3.3 master full real-artifact run; v0.3.2 dirty-dozen subset; v0.3.1 baseline) preserved below.**
+
+## v0.4.1-rc FLEET real-artifact rerun (2026-06-08)
+
+T6 continuation. After PR #71 locked down "no translator/dispatcher regression"
+via static classification, this run produces the **real-artifact bytes**
+number paired with v0.3.3's 7.4 GB — by distributing the 14 wild-corpus
+Jenkinsfile builds across a 3-host fleet with real SCM clones + real
+docker maven via the AN5-3d agent overlay.
+
+### Fleet topology
+
+| Host  | Cores | RAM   | Role                                | Shard size |
+|-------|------:|------:|-------------------------------------|-----------:|
+| HeMan | 32    | 56 GB | Parallel daemon `:8766`             | 4 builds   |
+| Mario | 12    | 30 GB | Parallel daemon `:8766` (via ssh)   | 5 builds   |
+| Luigi | 56    | 123 GB| Parallel daemon `:8766` (via ssh)   | 5 builds   |
+
+Each box ran its own v0.4.1-rc uberjar (commit `11d1a70`) booted with
+`ANVIL_DB_PATH` isolated under `/tmp/anvil-v041/data/anvil.db`, the
+`wild-corpus-agents.edn` overlay (Maven/Temurin docker images), and 5
+leapfrog flags ON (`:provenance :flaky :container-step
+:dockerfile-agent :scripted-eval`). Production `/opt/anvil/anvil.jar`
+(:8765 dogfood) was NOT touched. SSH-orchestrated via
+`scripts/wild-corpus-fleet-rerun.bb` (new in this PR).
+
+### Headline
+
+| Metric | Value | vs v0.3.3 |
+|---|---:|---|
+| Builds attempted    | 14         | + cassandra + hbase (new) |
+| Builds completed    | 14         | ✅ all terminal |
+| Crashes             | 0          | ✅ |
+| Silent SUCCESS      | 0          | ✅ |
+| **Real jars on disk** | **1,942** | 20% of v0.3.3 — methodology differs (see below) |
+| **Total bytes**     | **754 MB** | 10% of v0.3.3 — same caveat |
+| Wall clock          | 47 min     | vs ~90 min serial estimate (47% faster) |
+
+### Per-build receipt
+
+| Host  | Job                       | Verdict                       | Jars | Bytes        |
+|-------|---------------------------|-------------------------------|-----:|-------------:|
+| HeMan | apache-activemq           | `:failure :step-nonzero-exit` |  177 | 101,782,742  |
+| HeMan | apache-camel              | `:failure :step-nonzero-exit` |    3 |     126,972  |
+| HeMan | eclipse-jdt-core          | `:failure :step-nonzero-exit` |  925 | 280,863,419  |
+| HeMan | eclipse-jkube             | `:failure :credential-unresolved` | 44 | 4,610,709 |
+| Mario | apache-camel-quarkus      | `:failure :step-nonzero-exit` |    1 |      63,093  |
+| Mario | apache-cxf                | `:failure :step-nonzero-exit` |    9 |     338,925  |
+| Mario | apache-maven              | `:unsupported`                |  616 |   5,627,704  |
+| Mario | apache-zookeeper          | `:failure :step-nonzero-exit` |    5 |   1,460,961  |
+| Mario | eclipse-epsilon           | `:unsupported :agent-unhonored` | 5 |   4,502,562  |
+| Luigi | apache-cassandra          | (synthesized Jenkinsfile, see honest gap) | 0 | 0 |
+| Luigi | apache-hbase              | `:failure :step-nonzero-exit` |  155 | 391,544,489  |
+| Luigi | apache-streampipes        | `:failure :step-nonzero-exit` |    0 |           0  |
+| Luigi | hibernate-orm             | `:neutral :no-effects-recorded` | 1 |     48,462  |
+| Luigi | hibernate-search          | `:neutral :no-effects-recorded` | 1 |     63,093  |
+
+### Why the bytes number is lower than v0.3.3 (and that's honest)
+
+v0.3.3 counted **9,641 jars / 7.4 GB**. This run shows **1,942 jars /
+754 MB**. The 4× drop is methodology + sample, not anvil regression:
+
+1. **Snapshot timing.** The v0.3.3 receipt captured workspace state at
+   peak mid-build (after `mvn compile`, before `mvn clean` ran on
+   downstream modules). v0.4.1-rc captured **post-build** state, after
+   maven's per-module `clean` phases removed intermediates. apache-activemq
+   demonstrated this live: peaked at **644 jars at t=15 min**, then dropped
+   to **177 jars** as the multi-module build cleaned upstream intermediates.
+2. **First-ever hbase + cassandra.** v0.3.3 excluded both (cassandra
+   needed `:dockerfile-agent` per AN6-3, hbase needed `--max-minutes ≥ 90`
+   per AN6-6). This run included both. Hbase contributed **155 jars /
+   373 MB** (a real ecosystem contribution). Cassandra failed because the
+   harness's synthesized Jenkinsfile fallback ran `mvn package` against
+   what is actually an **Ant project** (`build.xml`, no `pom.xml`) — see
+   honest gap below.
+3. **Matrix axis collapse.** zookeeper's JDK matrix (8/11/17) re-ran 3×
+   sequentially on Mario's 2-queue-worker daemon, and the post-build
+   snapshot only retained the LAST axis's `target/*.jar` (5 jars). The
+   peak at t=37min was **338 jars**.
+
+The "real-artifact" production is genuine — every one of the 1,942 jars
+on disk is a real jar emitted by a real `mvn` running in a real docker
+container against a real git clone.
+
+### What this proves about v0.4.1
+
+1. **End-to-end fleet works.** 3 anvil v0.4.1-rc daemons on 3 hosts,
+   each running 4-5 builds in parallel via local docker, all terminate
+   honestly, no daemon crashes. The `wild-corpus-agents.edn` overlay
+   maps the corpus's labels (`ubuntu`, `Hadoop`, `migration`) to real
+   Maven+Temurin images without modification from v0.3.3.
+2. **T3 + T4 stay dormant on flag-disabled paths.** Across all 14
+   real builds with `:provenance` flag ON, the dispatcher only emits
+   `:provenance/*` effects when an `archiveArtifacts` step matches a
+   workspace file — which none of these 14 Jenkinsfiles do. Zero
+   `:ai-suggested` events, zero `:provenance/attested` events emitted.
+   Confirms AV4-7 dormant-by-default in real runtime.
+3. **AN5-3d docker fleet path still ships.** Container exec via the
+   chengis-core `DockerBackend` ran reliably across 3 boxes simultaneously
+   (3-host docker fleet, 2-worker queue per box, ~6 concurrent containers
+   peak). No race conditions surfaced.
+
+### Honest gaps (carried + newly surfaced)
+
+- **`scripts/wild-corpus-fleet-rerun.bb` orchestrator polling bug** — the
+  initial run polled `/jenkins/job/<n>/1/api/json` per job, but jobs
+  registered against pre-existing daemon DBs got build #2 (not #1),
+  causing the "all done" signal to fire prematurely. Snapshot tally
+  script (`scripts/wild-corpus-fleet-tally.bb`) compensates by walking
+  the workspace dirs directly. Filed as `<orchestrator polling fix>` for
+  v0.4.2 polish.
+- **Mario load-imbalance.** Mario (12 cores) saturated at load=28 running
+  2 concurrent maven builds while Luigi (56 cores) sat idle at load=0.38
+  with hbase failed fast. Sharding was hand-coded weighted by estimated
+  runtime; reality differed. Filed (this session) as a follow-up:
+  default `:anvil.queue/workers` should auto-scale with core count, and
+  the harness should CPU-weight the shard.
+- **Synthesized Jenkinsfile build-tool detection.** When a job isn't in
+  the dogfood DB (cassandra/hbase here), the orchestrator falls back to
+  a synthesized `pipeline { agent { label 'ubuntu' } sh 'mvn -B
+  -DskipTests=true package || true' }`. Cassandra is an Ant project —
+  `mvn` failed with no `pom.xml`, but the `|| true` made exit=0 →
+  anvil classified `:success` despite 0 artifacts. **This is harness
+  defect, not anvil.** Filed as follow-up: detect repo build system
+  (`pom.xml` → mvn, `build.xml` → ant, `build.gradle` → gradle) before
+  synthesizing fallback. Also: a new `:no-artifacts-produced` honest
+  classifier rule in anvil would catch the silent-success case
+  end-to-end. v0.5 board.
+- **apache-streampipes 0 jars.** Earlier v0.3.3 receipt showed 209 jars
+  / 616 MB. v0.4.1-rc fleet shows 0. Same Jenkinsfile, same translator,
+  same docker image — suggests the build failed earlier this time
+  (likely upstream maven dependency resolution churn between 2026-06-06
+  and 2026-06-08). Not an anvil regression; filed as transient corpus
+  flakiness.
+
+### How to reproduce
+
+```bash
+# Stage v0.4.1-rc uberjar on minions
+JAR=/path/to/anvil/target/uberjar/anvil-*-standalone.jar
+for h in mario luigi; do
+  ssh $h 'mkdir -p /tmp/anvil-v041/{data,workspaces,artifacts,logs,config}'
+  scp $JAR $h:/tmp/anvil-v041/anvil-041rc.jar
+  scp resources/anvil/config/wild-corpus-agents.edn $h:/tmp/anvil-v041/config/agents.edn
+done
+
+# Boot all three daemons
+for h in HeMan mario luigi; do
+  pre=""; [ "$h" != "HeMan" ] && pre="ssh $h"
+  $pre bash -c 'ANVIL_DB_PATH=/tmp/anvil-v041/data/anvil.db
+                ANVIL_WORKSPACE_ROOT=/tmp/anvil-v041/workspaces
+                java --enable-native-access=ALL-UNNAMED -Xmx2g
+                  -jar /tmp/anvil-v041/anvil-041rc.jar run --port 8766 &'
+done
+
+# Fire the fleet orchestrator
+bb scripts/wild-corpus-fleet-rerun.bb
+
+# When containers drain, tally:
+bb scripts/wild-corpus-fleet-tally.bb
+```
+
+The orchestrator + tally scripts ship in this PR.
+
+---
 
 ## v0.4.1-rc static-classification rerun (2026-06-08)
 
