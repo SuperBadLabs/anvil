@@ -206,6 +206,139 @@
            :stderr (str "[anvil] shell-execute exception: " (.getMessage e))
            :streamed? false})))))
 
+;; ---------------------------------------------------------------------------
+;; v0.5 T1.3 — step-level cache intercept
+;;
+;; When :anvil.features/cache is on AND the active-agent is docker,
+;; shell-execute is wrapped by `cached-execute`:
+;;
+;;   1. Derive the cache key from (image-digest, command, env, input-tree=[])
+;;      using anvil.cache.key/derive.
+;;   2. Fetch the local store via anvil.cache.lookup/fetch.
+;;   3. Cache hit  → replay stdout/stderr/exit from the store; publish
+;;      :cache-hit on the per-build bus topic (non-fatal if bus unavailable).
+;;   4. Cache miss → run shell-execute normally; publish :cache-miss; if
+;;      exit 0, store the result for next time.
+;;
+;; Input-tree is empty for this first cut (T1.3). Full workspace
+;; fingerprinting (step-inputs glob → sha256 pairs) is T1.5 scope; the
+;; missing tree means the cache key changes only when image/command/env
+;; change — correct for pure dependency-resolution steps, over-caching for
+;; steps that read workspace files. The cache-invariants receipt (T1.4)
+;; documents this honestly.
+;;
+;; The image "digest" used here is docker inspect's .Id (sha256:…).
+;; We try `docker inspect --format={{.Id}} IMAGE` and fall back to the
+;; raw tag string if docker is unavailable (tests, no-docker CI).
+;; Using the tag as a proxy is weaker than a content-addressed digest but
+;; still produces a DIFFERENT key when the agent config changes.
+;; ---------------------------------------------------------------------------
+
+(defn- resolve-docker-digest
+  "Try to get the content digest (sha256:…) for a docker image tag via
+   `docker inspect`. Returns the tag string itself on failure so the
+   cache key still differs between different images — it's just
+   not content-addressed when docker isn't on PATH."
+  [tag]
+  (try
+    (let [result (bp/process {:out :string :err :string}
+                              "docker" "inspect" "--format={{.Id}}" tag)
+          out (str/trim (:out @result))]
+      (if (and (zero? (:exit @result)) (str/starts-with? out "sha256:"))
+        out
+        tag))
+    (catch Throwable _ tag)))
+
+(defn- cache-feature-on? []
+  (try
+    ((requiring-resolve 'anvil.features/enabled?) :cache)
+    (catch Throwable _ false)))
+
+(defn- publish-cache-event!
+  "Publish a :cache-hit or :cache-miss event to the per-build bus topic.
+   Best-effort — a missing bus or bad ctx never aborts the step."
+  [event-type ctx cache-key extra]
+  (try
+    (let [publish!    (requiring-resolve 'anvil.events.bus/publish!)
+          topic-build (requiring-resolve 'anvil.events.topics/topic-build)
+          jn  (:job-name ctx)
+          bn  (:build-number ctx)]
+      (when (and jn bn)
+        (publish! (topic-build jn bn)
+                  (merge {:type event-type
+                          :job-name jn
+                          :build-number bn
+                          :cache-key cache-key}
+                         extra))))
+    (catch Throwable t
+      (log/debug t "anvil.dispatcher: cache event publish failed (non-fatal)"))))
+
+(defn- cached-execute
+  "Cache-aware wrapper around shell-execute. Called when :execute? is true,
+   the :cache feature flag is on, and the active-agent is docker-shaped.
+
+   Returns the same {:exit :stdout :stderr :streamed?} map as shell-execute."
+  [cmd ctx]
+  (let [docker-spec (docker-spec ctx)
+        image-tag   (when docker-spec (:image docker-spec))]
+    (if-not image-tag
+      ;; Not a docker step — fall through to plain shell-execute
+      (shell-execute cmd ctx)
+      (let [image-digest (resolve-docker-digest image-tag)
+            env          (:env ctx {})
+            cache-key    (try
+                           ((requiring-resolve 'anvil.cache.key/derive)
+                            {:image-digest image-digest
+                             :command cmd
+                             :env env
+                             :input-tree []})
+                           (catch Throwable t
+                             (log/warn t "anvil.dispatcher: cache key derivation failed; skipping cache")
+                             nil))]
+        (if-not cache-key
+          ;; key derivation failed — run without cache
+          (shell-execute cmd ctx)
+          (let [fetch (requiring-resolve 'anvil.cache.lookup/fetch)
+                hit   (fetch cache-key)]
+            (if hit
+              ;; ---------- CACHE HIT ----------
+              (let [saved-ms (or (:wall-ms hit) 0)]
+                (log/debug (str "anvil.cache: HIT key=" (subs cache-key 0 12)
+                                "… image=" image-tag " cmd=" (subs cmd 0 (min 60 (count cmd)))))
+                (publish-cache-event! :cache-hit ctx cache-key
+                                      {:saved-ms saved-ms})
+                {:exit      (or (:exit hit) 0)
+                 :stdout    (or (:stdout hit) "")
+                 :stderr    (or (:stderr hit) "")
+                 :streamed? false
+                 :cache-hit? true
+                 :cache-key cache-key})
+              ;; ---------- CACHE MISS ----------
+              (let [_ (log/debug (str "anvil.cache: MISS key=" (subs cache-key 0 12)
+                                      "… image=" image-tag))
+                    _ (publish-cache-event! :cache-miss ctx cache-key {})
+                    t0 (System/currentTimeMillis)
+                    {:keys [exit stdout stderr streamed?] :as result}
+                    (shell-execute cmd ctx)
+                    wall-ms (- (System/currentTimeMillis) t0)]
+                ;; Only store on zero exit; a failed step's artifacts are
+                ;; not a valid cached result (the next run may succeed under
+                ;; different conditions).
+                (when (zero? exit)
+                  (let [record! (requiring-resolve 'anvil.cache.lookup/record!)]
+                    (try
+                      (record! cache-key
+                               {:stdout       (or stdout "")
+                                :stderr       (or stderr "")
+                                :exit         exit
+                                :wall-ms      wall-ms
+                                :image-digest image-digest
+                                :command      cmd
+                                :now          (System/currentTimeMillis)})
+                      (catch Throwable t
+                        (log/warn t "anvil.dispatcher: cache write failed (non-fatal)")))))
+                result))))))))
+
 (defn- ok [ctx & {:keys [output stdout status-code]}]
   (cond-> {:status :ok :ctx ctx}
     output      (assoc :output output)
@@ -265,12 +398,25 @@
             safe-ctx (if (and (or secrets-active? want-stdout?) (:log-file ctx))
                        (dissoc ctx :log-file)
                        ctx)
-            {:keys [exit stdout stderr streamed?]} (shell-execute cmd safe-ctx)]
-        (log-effect d [:sh {:cmd cmd :cwd cwd
-                            :exit exit
-                            :streamed? (boolean streamed?)
-                            :stdout-bytes (count stdout)
-                            :stderr-bytes (count stderr)}])
+            ;; v0.5 T1.3 — cache intercept. When :anvil.features/cache is on
+            ;; AND we have a docker active-agent, route through cached-execute
+            ;; which checks the local CAS store before spawning a subprocess.
+            ;; When :cache is off (default) or secrets are active (don't cache
+            ;; steps with secret env — the cached stdout might leak the secret
+            ;; to a different build's operator) we fall through to shell-execute.
+            use-cache? (and (cache-feature-on?)
+                            (not secrets-active?)
+                            (some? (docker-spec safe-ctx)))
+            {:keys [exit stdout stderr streamed? cache-hit?]}
+            (if use-cache?
+              (cached-execute cmd safe-ctx)
+              (shell-execute cmd safe-ctx))]
+        (log-effect d [:sh (cond-> {:cmd cmd :cwd cwd
+                                    :exit exit
+                                    :streamed? (boolean streamed?)
+                                    :stdout-bytes (count stdout)
+                                    :stderr-bytes (count stderr)}
+                              cache-hit? (assoc :cache-hit? true))])
         (when (and (not streamed?) (seq stdout))
           (doseq [line (str/split-lines stdout)]
             (log-effect d [:stdout line])))
