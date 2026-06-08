@@ -115,9 +115,17 @@
    Output shape:
      [{:axes {'JDK' '17' 'OS' 'linux'}
        :env  {'JDK' '17' 'OS' 'linux'}
+       :tools [<matrix-level tool spec> ...]?
        :stages [<inner stages copied from :stages>]}
-      ...]"
-  [{:keys [axes excludes stages name]}]
+      ...]
+
+   AN8-3: when the matrix IR carries `:tools` (a `tools { … }` block
+   declared inside the matrix block, sibling to `axes`/`stages`), every
+   cell inherits it. Per-axis `${VAR}` interpolation happens at
+   dispatch time against the cell's `:axes` map — the translator only
+   surfaces the template text; the dispatcher resolves it before the
+   AN8-1 tool-mapping lookup."
+  [{:keys [axes excludes stages name tools]}]
   (let [axis-values (mapv :values axes)
         total (reduce * 1 (map count axis-values))
         cap (max-cells)]
@@ -133,10 +141,11 @@
          (map #(combo->env-map axes %))
          (remove #(combo-excluded? % excludes))
          (mapv (fn [combo-map]
-                 {:axes combo-map
-                  :env (zipmap (keys combo-map)
-                               (map str (vals combo-map)))
-                  :stages stages})))))
+                 (cond-> {:axes combo-map
+                          :env (zipmap (keys combo-map)
+                                       (map str (vals combo-map)))
+                          :stages stages}
+                   (seq tools) (assoc :tools tools)))))))
 
 (defn cell-name
   "Render a child cell's display name, e.g. 'JDK=17, OS=linux'.
@@ -208,28 +217,42 @@
        (mapv parse-exclude-call)))
 
 (defn parse-matrix-call
-  "Parse a `matrix { axes {} excludes? {} stages {} }` cdata :call
-   into IR. `parent-stage-name` is the surrounding stage's name.
+  "Parse a `matrix { axes {} excludes? {} tools? {} stages {} }` cdata
+   :call into IR. `parent-stage-name` is the surrounding stage's name.
 
-   Returns a matrix IR map or nil if the structure isn't recognizable."
-  [matrix-call parent-stage-name inner-stage-parser]
-  (let [inner (closure-body-calls matrix-call)
-        axes-call (some #(when (= "axes" (:name %)) %) inner)
-        excludes-call (some #(when (= "excludes" (:name %)) %) inner)
-        stages-call (some #(when (= "stages" (:name %)) %) inner)
-        axes (when axes-call (parse-axes-block axes-call))
-        excludes (when excludes-call (parse-excludes-block excludes-call))
-        ;; Inner stages parsed by the caller's stage-translator (we
-        ;; can't reach back into translator.clj from here without a
-        ;; circular dep; the caller passes its translator fn).
-        stages (when (and stages-call inner-stage-parser)
-                 (inner-stage-parser stages-call))]
-    (when (seq axes)
-      {:type :jenkins/matrix
-       :name parent-stage-name
-       :axes axes
-       :excludes (or excludes [])
-       :stages (vec stages)})))
+   Returns a matrix IR map or nil if the structure isn't recognizable.
+
+   AN8-3: a matrix block can declare its own `tools { … }` block sibling
+   to `axes`/`stages` (zookeeper's real Jenkinsfile shape). The caller
+   passes `tools-parser` so we don't introduce a circular dep on
+   `translator/translate-tools`; `tools-parser` receives the raw
+   `tools` :call cdata and returns the normalized vector of tool specs.
+   When absent or nil, matrix-level tools aren't surfaced (back-compat
+   with pre-AN8-3 callers)."
+  ([matrix-call parent-stage-name inner-stage-parser]
+   (parse-matrix-call matrix-call parent-stage-name inner-stage-parser nil))
+  ([matrix-call parent-stage-name inner-stage-parser tools-parser]
+   (let [inner (closure-body-calls matrix-call)
+         axes-call (some #(when (= "axes" (:name %)) %) inner)
+         excludes-call (some #(when (= "excludes" (:name %)) %) inner)
+         stages-call (some #(when (= "stages" (:name %)) %) inner)
+         tools-call (some #(when (= "tools" (:name %)) %) inner)
+         axes (when axes-call (parse-axes-block axes-call))
+         excludes (when excludes-call (parse-excludes-block excludes-call))
+         ;; Inner stages parsed by the caller's stage-translator (we
+         ;; can't reach back into translator.clj from here without a
+         ;; circular dep; the caller passes its translator fn).
+         stages (when (and stages-call inner-stage-parser)
+                  (inner-stage-parser stages-call))
+         tools (when (and tools-call tools-parser)
+                 (tools-parser tools-call))]
+     (when (seq axes)
+       (cond-> {:type :jenkins/matrix
+                :name parent-stage-name
+                :axes axes
+                :excludes (or excludes [])
+                :stages (vec stages)}
+         (seq tools) (assoc :tools tools))))))
 
 (defn matrix-child-call?
   "Predicate: is this stage-body :call a `matrix { }` block?"
