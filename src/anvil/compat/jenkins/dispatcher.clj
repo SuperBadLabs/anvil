@@ -721,6 +721,19 @@
                                    :note "recorder-only — no :workspace + :stash-root in ctx"}])
           (ok ctx)))))
 
+(defn- workspace-has-files?
+  "True when `ws` (java.io.File) exists, is a directory, and contains
+   at least one non-hidden entry. Used by the v0.6.1 AN8-4 heuristic
+   below: a stale-but-populated workspace from a prior build is a
+   legitimate base for downstream steps even when the implicit clone
+   fails. An empty workspace is the case we must NOT silently swallow."
+  [^java.io.File ws]
+  (boolean
+    (when (and ws (.isDirectory ws))
+      (some (fn [^java.io.File f]
+              (not (.startsWith (.getName f) ".")))
+            (.listFiles ws)))))
+
 (defn- h-checkout
   "Handle `:jenkins/checkout` steps.
 
@@ -737,7 +750,23 @@
    documented for zookeeper (`git clean -fxd` → exit 128).
 
    Idempotent: `scm/provision!` short-circuits to `:refreshed`
-   when `.git` already points at the registered URL/branch."
+   when `.git` already points at the registered URL/branch.
+
+   v0.6.1 — non-fatal-on-populated-workspace heuristic. The v0.6.0
+   dirty-dozen rerun regressed activemq (`:success` on v0.5.0 →
+   `:failure` on v0.6.0) because AN8-4's implicit clone failed for
+   the activemq URL (large repo, fresh-clone timeout) and the
+   dispatcher propagated that as a build failure. But the activemq
+   AN7-1 shim doesn't actually need a fresh source — its
+   `mvn -DskipTests install` ran fine against the stale-but-populated
+   workspace from prior builds (which is how it produced `:success`
+   on v0.5.0). The fix: when the implicit clone fails, check whether
+   the workspace already has files. If yes, downgrade the failure to
+   a `:checkout/degraded` effect + continue (downstream steps run
+   against the stale workspace, succeeding or failing on their own
+   merits). If no, preserve v0.6.0 fail-fast behavior — an empty
+   workspace plus a failed clone is the unambiguous case where
+   stage 1 has nothing to operate on."
   [d step ctx]
   (let [implicit? (:implicit? step)
         scm-cfg   (or (:scm step) (:scm ctx))
@@ -754,16 +783,32 @@
                                   :branch (:branch scm-cfg)
                                   :error (:error r)
                                   :source :scm-lifecycle}])
-        (if (= :failed (:result r))
-          ;; A failed implicit checkout means stage 1 will run against
-          ;; an empty / stale workspace — propagate the failure so the
-          ;; classifier sees the honest cause instead of a downstream
-          ;; `git clean -fxd: exit 128` red herring.
+        (cond
+          (not= :failed (:result r))
+          (ok ctx)
+
+          ;; v0.6.1 heuristic: failed clone + populated workspace →
+          ;; downgrade to non-fatal. Downstream steps run against the
+          ;; stale workspace. This restores the v0.5.0 behavior for
+          ;; AN7-1 shims whose `mvn install` was happy with stale source.
+          (workspace-has-files? ws)
+          (do (log-effect d [:checkout {:implicit? true
+                                        :result :degraded
+                                        :reason :workspace-populated
+                                        :error (:error r)
+                                        :explain "implicit clone failed but workspace has files from a prior build; downstream steps will run against the stale workspace and either succeed (shim doesn't need fresh source) or fail with their own honest exit code (AV6-6)"
+                                        :source :scm-lifecycle}])
+              (ok ctx))
+
+          ;; Empty workspace + failed clone — stage 1 has nothing to
+          ;; operate on. Fail-fast preserves v0.6.0 behavior + the
+          ;; AN8-4 receipt's "honest cause vs downstream red herring"
+          ;; promise for the truly-empty case.
+          :else
           {:status :failed
            :error :scm-checkout-failed
            :message (or (:error r) "implicit checkout failed")
-           :ctx ctx}
-          (ok ctx)))
+           :ctx ctx}))
 
       ;; Implicit checkout but no SCM configured — record skip and
       ;; return ok. Preserves pre-AN8-4 behavior for jobs registered

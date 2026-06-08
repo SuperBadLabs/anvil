@@ -104,3 +104,39 @@ Full suite: 961 tests / 2790 assertions / 0 failures.
   `checkout([$class: 'GitSCM', ...])`) on the explicit path.
   Pre-AN8-4 behavior persists: the runner's per-job `:scm` config is
   the only source of truth.
+
+## v0.6.1 heuristic addendum — non-fatal-on-populated-workspace
+
+The v0.6.0 dirty-dozen rerun (see
+[v0-6-0-t6-receipt.md](v0-6-0-t6-receipt.md)) regressed
+`wild-apache-activemq` from `:success` on v0.5.0 to `:failure` on
+v0.6.0: AN8-4's implicit clone of the large `apache/activemq` repo
+failed fast (~838 ms) and the dispatcher propagated the failure as
+an aborted build. But the AN7-1 activemq shim's
+`mvn -DskipTests install` would have run fine against the
+stale-but-populated workspace from prior builds (that's exactly how
+v0.5.0 produced its `:success`).
+
+**v0.6.1 fix**: `h-checkout` now consults `workspace-has-files?`
+when implicit clone fails:
+
+- **Populated workspace** (`pom.xml`, source dirs, etc. from a prior
+  run) → log `:checkout :result :degraded :reason :workspace-populated`
+  effect with the original `:error` + an `:explain` string, then
+  return ok. Downstream steps run against the stale workspace and
+  either succeed (shim doesn't need fresh source) or fail with their
+  own honest exit code (AV6-6 honesty preserved).
+- **Empty workspace** (or dotfile-only — `.gitignore` from a failed
+  prior clone, etc.) → v0.6.0 fail-fast preserved. Stage 1 has
+  nothing to operate on; failing here is the honest cause.
+
+This is a heuristic, not a strict contract. The principle is "match
+Jenkins's lifecycle where it gains us correctness, fall back to
+v0.5.0 behavior where AN8-4 alone introduces a regression." See
+the v0.6.1 CHANGELOG entry for the verdict-tally restoration
+(5/14 → 6/14 projected).
+
+Operators who prefer strict Jenkins-parity (fail on ANY failed
+implicit checkout, regardless of workspace state) can `false` the
+`:anvil.features/scm-checkout-lifecycle` flag — AN8-4 then no-ops
+and the v0.5.0 "no implicit checkout" contract returns.
