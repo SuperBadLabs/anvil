@@ -47,11 +47,40 @@
     (when (.exists (java.io.File. f)) (slurp f))))
 
 ;; For jobs not in the dogfood snapshot (cassandra, hbase), seed
-;; a minimal placeholder we can replace later. We'll register them
-;; with SCM only and let the daemon fall back to its own clone.
+;; a minimal placeholder we can replace later.
+;;
+;; apache-cassandra is Ant-based: the repo ships `build.xml` with
+;; `jar` / `artifacts` targets and NO `pom.xml`. The original
+;; placeholder ran `mvn package` here — that failed instantly
+;; ("non-readable POM"), exited via `|| true`, and yielded zero
+;; artifacts. The synthetic below now bootstraps ant from the
+;; upstream tarball (chengis-core's docker backend defaults to
+;; `--user $UID:$GID`, so `apt-get install` is permission-denied
+;; inside the maven image) and runs `ant jar`, which produces
+;; `build/apache-cassandra-<version>.jar` in 30-60s. Label is
+;; `Hadoop` (→ maven:3.9-eclipse-temurin-17) because cassandra
+;; trunk targets JDK 11/17, not the JDK 21 the `ubuntu` label maps
+;; to. The `|| true` is dropped — the classifier should see the
+;; honest exit code, not a silenced no-op masquerading as
+;; `:success`. Target stays at `jar`; the `artifacts` target needs
+;; additional dependencies we don't bootstrap here. Single-line
+;; `sh '...'` (not `sh '''...'''`) — anvil's Groovy heredoc parse
+;; drops leading lines from triple-quoted blocks.
+;;
+;; Verified locally against the v0.5 daemon: build #4 produced
+;; `build/apache-cassandra-7.0-SNAPSHOT.jar` in 82.9s and
+;; classified `:success` honestly.
+;;
+;; apache-hbase IS Maven (real pom.xml at the repo root) — the
+;; mvn placeholder stays.
 (def fallback-jfs
-  {"wild-apache-cassandra" "pipeline { agent { label 'ubuntu' }\n  stages { stage('build') { steps { sh 'mvn -B -DskipTests=true package || true' } } } }\n"
-   "wild-apache-hbase"     "pipeline { agent { label 'Hadoop' }\n  stages { stage('build') { steps { sh 'mvn -B -DskipTests=true package || true' } } } }\n"})
+  {"wild-apache-cassandra"
+   (str "pipeline { agent { label 'Hadoop' }\n"
+        "  stages { stage('build') { steps { "
+        "sh 'curl -fsSL https://archive.apache.org/dist/ant/binaries/apache-ant-1.10.14-bin.tar.gz | tar xz && ./apache-ant-1.10.14/bin/ant -q jar'"
+        " } } } }\n")
+   "wild-apache-hbase"
+   "pipeline { agent { label 'Hadoop' }\n  stages { stage('build') { steps { sh 'mvn -B -DskipTests=true package || true' } } } }\n"})
 
 (defn- post-json! [url path body]
   (http/post (str url path)
