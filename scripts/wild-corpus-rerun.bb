@@ -19,8 +19,10 @@
 ;;     [--max-minutes M]
 ;;
 ;;   Optional explicit per-host weight (overrides the daemon's reported
-;;   numExecutors, useful when a host is shared with other work):
-;;     --fleet=http://heman:8765:4,http://mario:8765:2,http://luigi:8765:8
+;;   numExecutors, useful when a host is shared with other work). The
+;;   `@` separator stays unambiguous against URLs that already contain
+;;   colons (IPv6, basic-auth userinfo):
+;;     --fleet=http://heman:8765@4,http://mario:8765@2,http://luigi:8765@8
 ;;
 ;;   Without explicit weights, each daemon is queried for its
 ;;   `numExecutors` (now sourced from :anvil.queue/workers /
@@ -170,21 +172,30 @@
     (catch Exception _ nil)))
 
 (defn- parse-fleet-arg
-  "Parse `--fleet=URL[:weight],URL[:weight],...` into a vector of
+  "Parse `--fleet=URL[@weight],URL[@weight],...` into a vector of
    `{:host URL :weight INT-or-nil}`. Weight is optional; if missing,
    the caller will query the daemon for numExecutors.
 
-   URL may legitimately contain colons (`http://host:8765`), so we
-   only treat a trailing `:N` as a weight if N parses as a positive
-   integer."
+   The `@` separator (not `:`) is deliberate so that URLs with
+   embedded colons (IPv6 literals `http://[::1]:8765`, basic-auth
+   userinfo `http://u:p@h:8765`) parse unambiguously. Weight must be
+   a positive integer — `@0` and negatives throw with the offending
+   token so an operator typo fails loud at boot rather than silently
+   dropping a host or zeroing the apportionment denominator."
   [s]
   (mapv (fn [entry]
-          (let [bits (str/split entry #":")]
-            (if (and (>= (count bits) 4)             ; scheme:host:port:weight
-                     (re-matches #"\d+" (last bits)))
-              {:host (str/join ":" (butlast bits))
-               :weight (parse-long (last bits))}
-              {:host entry :weight nil})))
+          (let [at (.indexOf entry "@")]
+            (if (neg? at)
+              {:host entry :weight nil}
+              (let [host (subs entry 0 at)
+                    w-str (subs entry (inc at))
+                    w (parse-long w-str)]
+                (when-not (and w (pos? w))
+                  (throw (ex-info (str "fleet entry " entry
+                                       ": weight must be a positive integer, got "
+                                       (pr-str w-str))
+                                  {:entry entry :weight w-str})))
+                {:host host :weight w}))))
         (str/split s #",")))
 
 (defn- resolve-weights

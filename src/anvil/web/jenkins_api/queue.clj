@@ -50,10 +50,9 @@
    3, HeMan 32c at 8, Luigi 56c at 14 — leaves headroom for the maven
    JVM thread pools each build spawns without going onto the swap.
 
-   Override paths (highest precedence first):
-     1. `ANVIL_WORKERS` env var
-     2. `:anvil.queue/workers` in `anvil.edn`
-     3. this default"
+   This is the pure CPU-derived default. The boot-time resolver in
+   `anvil.core/resolve-worker-count` layers `ANVIL_WORKERS` (env) and
+   `:anvil.queue/workers` (anvil.edn) on top of it."
   []
   (max 2 (long (quot (.availableProcessors (Runtime/getRuntime)) 4))))
 

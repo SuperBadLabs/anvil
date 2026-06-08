@@ -92,9 +92,11 @@ bb scripts/wild-corpus-rerun.bb \
    --cycle=0 \
    --max-minutes=90
 
-# Explicit per-host weight override (host shared with other work):
+# Explicit per-host weight override (host shared with other work).
+# `@` (not `:`) is the weight separator so URLs with embedded colons
+# — IPv6 literals, basic-auth userinfo — parse unambiguously.
 bb scripts/wild-corpus-rerun.bb \
-   --fleet=http://heman:8765:4,http://mario:8765:2,http://luigi:8765:12 \
+   --fleet=http://heman:8765@4,http://mario:8765@2,http://luigi:8765@12 \
    --cycle=1
 
 # Dry-run the plan before committing to a multi-hour run:

@@ -40,8 +40,18 @@
    match the daemon-side config you thought you shipped."
   []
   (or (when-let [s (System/getenv "ANVIL_WORKERS")]
-        (try [(Integer/parseInt s) :env]
-             (catch NumberFormatException _ nil)))
+        ;; pos-int? guard: newFixedThreadPool throws on n<=0, and a
+        ;; "0 workers" config silently never dispatches anything —
+        ;; either way, a typo'd env value should fall through to the
+        ;; config / default path, not poison the daemon at boot.
+        (try (let [n (Integer/parseInt s)]
+               (if (pos? n)
+                 [n :env]
+                 (do (log/warn (format "ANVIL_WORKERS=%s ignored (must be >0)" s))
+                     nil)))
+             (catch NumberFormatException _
+               (log/warn (format "ANVIL_WORKERS=%s ignored (not an integer)" s))
+               nil)))
       (let [cfg ((requiring-resolve 'anvil.config/load-edn) "anvil" {})
             n (:anvil.queue/workers cfg)]
         (when (pos-int? n) [n :config]))
