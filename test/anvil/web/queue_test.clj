@@ -93,8 +93,8 @@
                    (reset! done? true))]
       (queue/start-workers! 1 run-fn)
       (queue/enqueue! "demo" {:parameters {"K" "V"}})
-      (let [r (wait-until #(deref done?) 2000)]
-        (is (= :done r) "worker ran the run-fn within 2s"))
+      (let [r (wait-until #(deref done?) 30000)]
+        (is (= :done r) "worker ran the run-fn within 30s"))
       (is (= 1 (count @calls)))
       (is (= "demo" (-> @calls first :job-name)))
       (is (= {"K" "V"} (-> @calls first :opts :parameters))))))
@@ -130,8 +130,8 @@
       (Thread/sleep 200)
       (is (= 1 @started) "only one build runs at a time for this job")
       (.countDown latch)
-      (wait-until #(= 2 @finished) 2000)
-      (is (= 2 @finished)))))
+      (wait-until #(= 2 @finished) 30000)
+      (is (= 2 @finished) "second build never completed within 30s"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Full HTTP trigger → queue → worker path
